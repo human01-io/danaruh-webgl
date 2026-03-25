@@ -1,0 +1,1178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Scroll Tunnel</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700;900&display=swap');
+        @font-face {
+            font-family: 'VG5000';
+            src: url('assets/fonts/VG5000-Regular_web.woff2') format('woff2'),
+                 url('assets/fonts/VG5000-Regular_web.woff') format('woff');
+            font-weight: normal; font-style: normal;
+        }
+        @font-face {
+            font-family: 'Flor de Ruina Flor';
+            src: url('assets/fonts/FlorDeRuina-Flor.woff2') format('woff2'),
+                 url('assets/fonts/FlorDeRuina-Flor.woff') format('woff');
+            font-weight: normal; font-style: normal;
+        }
+        @font-face {
+            font-family: 'Flor de Ruina Fractura';
+            src: url('assets/fonts/FlorDeRuina-Fractura.woff') format('woff');
+            font-weight: normal; font-style: normal;
+        }
+        @font-face {
+            font-family: 'Flor de Ruina Germen';
+            src: url('assets/fonts/FlorDeRuina-Germen.woff') format('woff');
+            font-weight: normal; font-style: normal;
+        }
+        @font-face {
+            font-family: 'Flor de Ruina Ruina';
+            src: url('assets/fonts/FlorDeRuina-Ruina.woff') format('woff');
+            font-weight: normal; font-style: normal;
+        }
+        @font-face {
+            font-family: 'Flor de Ruina Semilla';
+            src: url('assets/fonts/FlorDeRuina-Semilla.woff') format('woff');
+            font-weight: normal; font-style: normal;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #000; overflow-x: hidden; font-family: 'Inter', sans-serif; }
+        #c { position: fixed; top: 0; left: 0; width: 100%; height: 100%; }
+        #scroll-driver { position: relative; z-index: 1; height: 800vh; pointer-events: none; }
+        #hint {
+            position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+            z-index: 10; color: rgba(255,255,255,0.4); font-size: 11px;
+            letter-spacing: 0.15em; text-transform: uppercase;
+            transition: opacity 0.5s; pointer-events: none;
+        }
+        #hint.hidden { opacity: 0; }
+        #hint span { display: block; text-align: center; animation: bob 2s ease-in-out infinite; font-size: 18px; margin-bottom: 4px; }
+        @keyframes bob { 0%,100%{transform:translateY(0)} 50%{transform:translateY(6px)} }
+        #grain {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; z-index: 15; opacity: 0.06; mix-blend-mode: overlay;
+        }
+        #loading {
+            position: fixed; top:0; left:0; width:100%; height:100%; background:#000;
+            z-index: 100; display:flex; align-items:center; justify-content:center;
+            flex-direction:column; color: rgba(255,255,255,0.4); font-size:13px;
+            letter-spacing:0.1em; transition: opacity 1s;
+        }
+        #loading.done { opacity:0; pointer-events:none; }
+        #loading .spinner { width:40px; height:40px; border:2px solid rgba(255,255,255,0.1);
+            border-top-color: #EE0055; border-radius:50%; animation: spin 1s linear infinite; margin-bottom:1rem; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+    <script type="importmap">
+    { "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }}
+    </script>
+</head>
+<body>
+<div id="loading"><div class="spinner"></div><span id="pct">0%</span></div>
+<canvas id="c"></canvas>
+<div id="scroll-driver"></div>
+<div id="hint"><span>&#8595;</span>scroll to fly through</div>
+
+<canvas id="grain"></canvas>
+
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import GUI from 'https://cdn.jsdelivr.net/npm/lil-gui@0.20/+esm';
+
+// ─── RENDERER ───
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+// ─── CLIPPING PLANE ───
+const clipPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0);
+window._renderer = renderer;
+window._clipPlane = clipPlane;
+
+const scene = new THREE.Scene();
+window._scene = scene;
+scene.background = new THREE.Color(0x000000);
+
+const camera = new THREE.PerspectiveCamera(90, window.innerWidth / window.innerHeight, 0.01, 2000);
+camera.position.set(0, 0, -2);
+window._camera = camera;
+
+// ─── SHADER-BASED CLIPPING ───
+// Inject clip plane logic directly into fragment shaders (bypasses EffectComposer issues)
+const clipUniforms = {
+    clipPlaneNormal: { value: new THREE.Vector3(0, 0, -1) },
+    clipPlaneConstant: { value: 0.0 },
+    clipEnabled: { value: 1.0 },
+};
+window._clipUniforms = clipUniforms;
+
+function addShaderClipping(material) {
+    material.onBeforeCompile = (shader) => {
+        shader.uniforms.clipPlaneNormal = clipUniforms.clipPlaneNormal;
+        shader.uniforms.clipPlaneConstant = clipUniforms.clipPlaneConstant;
+        shader.uniforms.clipEnabled = clipUniforms.clipEnabled;
+
+        // Add world position varying to vertex shader
+        shader.vertexShader = `varying vec3 vWorldPos;\n` + shader.vertexShader;
+        shader.vertexShader = shader.vertexShader.replace(
+            '#include <worldpos_vertex>',
+            `#include <worldpos_vertex>
+             vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+        );
+
+        // Use world position for clipping in fragment shader
+        shader.fragmentShader = `
+            varying vec3 vWorldPos;
+            uniform vec3 clipPlaneNormal;
+            uniform float clipPlaneConstant;
+            uniform float clipEnabled;
+        ` + shader.fragmentShader;
+        shader.fragmentShader = shader.fragmentShader.replace(
+            'void main() {',
+            `void main() {
+                if (clipEnabled > 0.5) {
+                    float clipDist = dot(vWorldPos, clipPlaneNormal) + clipPlaneConstant;
+                    if (clipDist < 0.0) discard;
+                }
+            `
+        );
+    };
+    material.needsUpdate = true;
+}
+
+// ─── POST-PROCESSING ───
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    0.9, 0.4, 0.3
+);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+// ─── LIGHTS — dramatic, colored, multiple sources ───
+scene.add(new THREE.AmbientLight(0x220011, 0.4)); // dim warm ambient, not white
+
+const dirLight = new THREE.DirectionalLight(0xffeedd, 1.5);
+dirLight.position.set(3, 8, 10);
+scene.add(dirLight);
+
+const dirLight2 = new THREE.DirectionalLight(0x4400ff, 0.8);
+dirLight2.position.set(-5, -3, -8);
+scene.add(dirLight2);
+
+const pinkLight = new THREE.PointLight(0xEE0055, 4, 60, 1.5);
+scene.add(pinkLight);
+const blueLight = new THREE.PointLight(0x3a86ff, 3, 60, 1.5);
+scene.add(blueLight);
+const greenLight = new THREE.PointLight(0x00ff88, 2.5, 50, 1.5);
+scene.add(greenLight);
+const purpleLight = new THREE.PointLight(0xaa00ff, 3, 55, 1.5);
+scene.add(purpleLight);
+
+// ─── LOAD TEXTURES ───
+const texLoader = new THREE.TextureLoader();
+const textures = {};
+const texPaths = {
+    plane:    'assets/textures/plane_texture.png',
+    line:     'assets/textures/line.png',
+    bigBall:  'assets/textures/small_sphere.png',      // "Small_sphere" material → Big_ball mesh
+    smallBall:'assets/textures/super_small_sphere.png', // "Super_small_sphere" material → Small_ball mesh
+    spiked:   'assets/textures/spiked_sphere.png',
+    letters:  'assets/textures/Square_texts_atlas_rgba.png',
+};
+
+// Load all textures in parallel
+const texPromises = Object.entries(texPaths).map(([key, path]) =>
+    new Promise((resolve) => {
+        texLoader.load(path, (tex) => {
+            tex.colorSpace = THREE.SRGBColorSpace;
+            textures[key] = tex;
+            resolve();
+        }, undefined, () => { resolve(); }); // resolve even on error
+    })
+);
+
+// ─── LOAD THE SQUARETUBE MODEL ───
+const ktx2Loader = new KTX2Loader();
+ktx2Loader.setTranscoderPath('https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/basis/');
+ktx2Loader.detectSupport(renderer);
+
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/draco/');
+
+const loader = new GLTFLoader();
+loader.setDRACOLoader(dracoLoader);
+loader.setKTX2Loader(ktx2Loader);
+loader.setMeshoptDecoder(MeshoptDecoder);
+
+const loadingEl = document.getElementById('loading');
+const pctEl = document.getElementById('pct');
+
+let tunnelModel = null;
+let tunnelBounds = { min: new THREE.Vector3(), max: new THREE.Vector3(), center: new THREE.Vector3() };
+
+// Load model (original GLB without basis textures) + textures in parallel
+const modelPromise = new Promise((resolve, reject) => {
+    loader.load(
+        'assets/models/03.Squaretube.glb',
+        (gltf) => resolve(gltf),
+        (xhr) => { if (xhr.total) pctEl.textContent = Math.round(xhr.loaded / xhr.total * 100) + '%'; },
+        (err) => reject(err)
+    );
+});
+
+Promise.all([modelPromise, ...texPromises]).then(([gltf]) => {
+        tunnelModel = gltf.scene;
+
+        // Track meshes by category for color cycling + morph animation
+        const morphMeshes = [];
+        const waveMeshes = [];
+        const lineMeshes = [];
+        const objectMeshes = [];
+        const frameMeshes = [];
+
+        tunnelModel.traverse((child) => {
+            if (!child.isMesh) return;
+            const n = child.name.toLowerCase();
+            const hasMorphs = child.morphTargetInfluences && child.morphTargetInfluences.length > 0;
+
+            // Compute normals for flat shading (model ships without normals)
+            if (child.geometry && !child.geometry.attributes.normal) {
+                child.geometry.computeVertexNormals();
+            }
+
+            // All meshes use MeshBasicMaterial (unlit, like the original).
+            // Color cycling tints the texture via material.color.
+            // The faceted look comes from flat geometry + texture sampling.
+            if (n.includes('waves_up') || n.includes('waves_down')) {
+                child.material = new THREE.MeshStandardMaterial({
+                    map: textures.plane || null,
+                    emissiveMap: textures.plane || null,
+                    emissive: new THREE.Color(0xffffff),
+                    emissiveIntensity: 1.0,
+                    color: 0x000000,
+                    flatShading: true,
+                    side: THREE.DoubleSide,
+                });
+                waveMeshes.push(child);
+            } else if (n.includes('lines')) {
+                if (!window._stripeTex) {
+                    const sc = document.createElement('canvas');
+                    sc.width = 256; sc.height = 4;
+                    const sx = sc.getContext('2d');
+                    for (let x = 0; x < 256; x++) {
+                        const stripe = (x % 32) < 2; // wider gaps (30px gap, 2px stripe)
+                        sx.fillStyle = stripe ? '#ffffff' : '#000000';
+                        sx.fillRect(x, 0, 1, 4);
+                    }
+                    window._stripeTex = new THREE.CanvasTexture(sc);
+                    window._stripeTex.wrapS = THREE.RepeatWrapping;
+                    window._stripeTex.wrapT = THREE.RepeatWrapping;
+                    window._stripeTex.repeat.set(1.5, 1); // fewer repeats
+                }
+                child.material = new THREE.MeshBasicMaterial({
+                    color: 0xffffff,
+                    transparent: true,
+                    alphaMap: window._stripeTex,
+                    alphaTest: 0.5,
+                    side: THREE.DoubleSide,
+                });
+                lineMeshes.push(child);
+            } else if (n.includes('spiked')) {
+                child.material = new THREE.MeshStandardMaterial({
+                    map: textures.spiked || null,
+                    emissiveMap: textures.spiked || null,
+                    emissive: new THREE.Color(0xffffff),
+                    emissiveIntensity: 1.0,
+                    color: 0x000000,
+                    flatShading: true,
+                });
+                objectMeshes.push(child);
+            } else if (n.includes('big_ball')) {
+                child.material = new THREE.MeshStandardMaterial({
+                    map: textures.bigBall || null,
+                    emissiveMap: textures.bigBall || null,
+                    emissive: new THREE.Color(0xffffff),
+                    emissiveIntensity: 1.0,
+                    color: 0x000000,
+                    flatShading: true,
+                });
+                objectMeshes.push(child);
+            } else if (n.includes('small_ball')) {
+                child.material = new THREE.MeshStandardMaterial({
+                    map: textures.smallBall || null,
+                    emissiveMap: textures.smallBall || null,
+                    emissive: new THREE.Color(0xffffff),
+                    emissiveIntensity: 1.0,
+                    color: 0x000000,
+                    flatShading: true,
+                });
+                objectMeshes.push(child);
+            } else if (n.includes('letter') || n.includes('4x')) {
+                // Texture atlas with RITMO ENIGMA text
+                if (!window._ritmoTex) {
+                    const tc = document.createElement('canvas');
+                    tc.width = 2048; tc.height = 2048;
+                    const ctx = tc.getContext('2d');
+                    ctx.clearRect(0, 0, tc.width, tc.height);
+                    const strips = [
+                        { vMin: 0.02, vMax: 0.11 },
+                        { vMin: 0.19, vMax: 0.29 },
+                        { vMin: 0.37, vMax: 0.47 },
+                        { vMin: 0.54, vMax: 0.64 },
+                        { vMin: 0.72, vMax: 0.82 },
+                        { vMin: 0.89, vMax: 0.99 },
+                    ];
+                    ctx.translate(tc.width, 0);
+                    ctx.scale(-1, 1);
+                    const segment = 'RITMO ENIGMA \u2022 ';
+                    for (const strip of strips) {
+                        const yTop = (1 - strip.vMax) * tc.height;
+                        const yBot = (1 - strip.vMin) * tc.height;
+                        const stripH = yBot - yTop;
+                        const fontSize = Math.floor(stripH * 0.7);
+                        const yCenter = yTop + stripH / 2;
+                        ctx.font = `900 ${fontSize}px Inter, sans-serif`;
+                        ctx.fillStyle = '#ffffff';
+                        ctx.textAlign = 'left';
+                        ctx.textBaseline = 'middle';
+                        const segW = ctx.measureText(segment).width;
+                        for (let x = 0; x < tc.width + segW; x += segW) {
+                            ctx.fillText(segment, x, yCenter);
+                        }
+                    }
+                    window._ritmoTex = new THREE.CanvasTexture(tc);
+                    window._ritmoTex.wrapS = THREE.ClampToEdgeWrapping;
+                    window._ritmoTex.wrapT = THREE.ClampToEdgeWrapping;
+                }
+                child.material = new THREE.MeshBasicMaterial({
+                    map: window._ritmoTex,
+                    transparent: true,
+                    color: 0xffffff,
+                    side: THREE.DoubleSide,
+                    depthWrite: false,
+                });
+                frameMeshes.push(child);
+            } else {
+                child.material = new THREE.MeshBasicMaterial({
+                    color: 0xffffff,
+                    side: THREE.DoubleSide,
+                });
+            }
+
+            if (!(n.includes('letter') || n.includes('4x'))) {
+                addShaderClipping(child.material);
+            }
+            if (hasMorphs) morphMeshes.push(child);
+        });
+
+        window._morphMeshes = morphMeshes;
+        window._colorGroups = { waveMeshes, lineMeshes, objectMeshes, frameMeshes };
+
+        // Compute bounding box
+        const box = new THREE.Box3().setFromObject(tunnelModel);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+
+        console.log('Tunnel size:', size.x.toFixed(1), size.y.toFixed(1), size.z.toFixed(1));
+        console.log('Tunnel center:', center.x.toFixed(1), center.y.toFixed(1), center.z.toFixed(1));
+
+        // Find the longest axis — that's the tunnel depth
+        // Don't reposition — just record bounds for camera path
+        tunnelBounds.min.copy(box.min);
+        tunnelBounds.max.copy(box.max);
+        tunnelBounds.center.copy(center);
+
+        scene.add(tunnelModel);
+
+        // Set initial camera position at the start of the tunnel
+        // Start just outside the min of the longest axis
+        const longestAxis = size.x > size.y ? (size.x > size.z ? 'x' : 'z') : (size.y > size.z ? 'y' : 'z');
+        console.log('Longest axis:', longestAxis, '=', size[longestAxis].toFixed(1));
+
+        // Orient clip plane along the tunnel's longest axis
+        // Camera travels from max to min (-Z direction)
+        // Normal points toward min (-axis) so geometry at higher values (behind camera) gets clipped
+        const clipNormal = new THREE.Vector3();
+        clipNormal[longestAxis] = -1;
+        clipPlane.normal.copy(clipNormal);
+        console.log('Clip plane normal:', clipPlane.normal.toArray(), 'axis:', longestAxis);
+
+        // Store for scroll-driven camera
+        window._tunnel = { size, center, longestAxis, box, model: tunnelModel };
+
+        // Spawn 3D text after fonts are loaded
+        document.fonts.ready.then(() => spawnTextMeshes(box));
+
+        loadingEl.classList.add('done');
+}).catch((err) => {
+    console.error('Load failed:', err);
+});
+
+// ─── 3D TEXT PLANES ───
+const textEntries = [
+    { text: 'ritmo   enigma', size: 200, position: 0.12 },  // position = fraction along tunnel
+    { text: 'Dana Ruh', size: 160, position: 0.25 },
+    { text: 'ZEPHA', size: 140, position: 0.45 },
+    { text: 'Sokidd', size: 140, position: 0.55 },
+    { text: '11 Abril', size: 120, position: 0.75 },
+    { text: 'Radio28', size: 120, position: 0.90 },
+];
+
+const textMeshes = [];
+window._textMeshes = textMeshes;
+
+function makeTextTexture(text, fontSize, font, color) {
+    const c = document.createElement('canvas');
+    const ctx = c.getContext('2d');
+    // Measure with a large canvas first
+    c.width = 4096; c.height = 1024;
+    ctx.font = `900 ${fontSize}px '${font}', 'Inter', sans-serif`;
+    const metrics = ctx.measureText(text);
+    const tw = Math.ceil(metrics.width) + fontSize;
+    const th = Math.ceil(fontSize * 1.6);
+    c.width = tw; c.height = th;
+    // Re-set font after resize
+    ctx.font = `900 ${fontSize}px '${font}', 'Inter', sans-serif`;
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, tw / 2, th / 2);
+    const tex = new THREE.CanvasTexture(c);
+    tex.needsUpdate = true;
+    return { tex, aspect: tw / th };
+}
+
+function spawnTextMeshes(tunnelBox) {
+    // Clear old
+    for (const m of textMeshes) scene.remove(m);
+    textMeshes.length = 0;
+
+    const zMax = tunnelBox.max.z;
+    const zMin = tunnelBox.min.z;
+    const zRange = zMax - zMin;
+    const p = window._params || {};
+    const font = p.textFont || 'VG5000';
+    const color = p.textColor || '#e8e4e0';
+
+    for (const entry of textEntries) {
+        const { tex, aspect } = makeTextTexture(entry.text, entry.size, font, color);
+        const planeH = 0.6;
+        const planeW = planeH * aspect;
+        const geo = new THREE.PlaneGeometry(planeW, planeH);
+        const mat = new THREE.MeshBasicMaterial({
+            map: tex, transparent: true, depthWrite: false,
+            side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        // Position along tunnel Z axis
+        mesh.position.z = zMax - entry.position * zRange;
+        mesh.position.x = 0;
+        mesh.position.y = 0;
+        mesh.rotation.set(0, 0, 0);
+        mesh.userData.entry = entry;
+        scene.add(mesh);
+        textMeshes.push(mesh);
+    }
+}
+
+function rebuildTextMeshes() {
+    if (window._tunnel) spawnTextMeshes(window._tunnel.box);
+}
+
+// ─── FILM GRAIN ───
+const grainCanvas = document.getElementById('grain');
+const grainCtx = grainCanvas.getContext('2d');
+grainCanvas.width = Math.floor(window.innerWidth / 2);
+grainCanvas.height = Math.floor(window.innerHeight / 2);
+let grainFrame = 0;
+
+function updateGrain() {
+    const scale = window._params?.grainScale ?? 2;
+    grainCanvas.width = Math.max(1, Math.floor(window.innerWidth / scale));
+    grainCanvas.height = Math.max(1, Math.floor(window.innerHeight / scale));
+    const w = grainCanvas.width, h = grainCanvas.height;
+    const imageData = grainCtx.createImageData(w, h);
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+        const v = Math.random() * 255;
+        data[i] = v; data[i+1] = v; data[i+2] = v; data[i+3] = 255;
+    }
+    grainCtx.putImageData(imageData, 0, 0);
+}
+
+// ─── SCROLL ───
+let scrollProgress = 0;
+let smoothScrollProgress = 0;
+const hint = document.getElementById('hint');
+window.addEventListener('scroll', () => {
+    const h = document.getElementById('scroll-driver').scrollHeight - window.innerHeight;
+    scrollProgress = Math.max(0, Math.min(1, window.scrollY / h));
+    hint.classList.toggle('hidden', window.scrollY > 200);
+}, { passive: true });
+
+// ─── MOUSE ───
+let mx = 0, my = 0;
+window.addEventListener('mousemove', e => {
+    mx = (e.clientX / window.innerWidth - 0.5) * 2;
+    my = (e.clientY / window.innerHeight - 0.5) * 2;
+});
+
+// ─── ANIMATE ───
+const clock = new THREE.Clock();
+
+function animate() {
+    requestAnimationFrame(animate);
+    const time = clock.getElapsedTime();
+
+    if (!window._tunnel) {
+        composer.render();
+        return;
+    }
+
+    const t = window._tunnel;
+    const axis = t.longestAxis;
+
+    // Camera flies straight through the tunnel along its longest axis
+    // Camera looks in -Z, so start at max (entrance) and travel toward min (far end)
+    const startPos = t.box.max[axis] + 1;
+    const endPos = t.box.min[axis] - 1;
+    const travelDist = endPos - startPos;
+
+    // Smooth the scroll value so position and rotation move together
+    const p = window._params || {};
+
+    // Auto-scroll override
+    if (p.autoScroll) {
+        if (window._autoScrollStart === undefined) window._autoScrollStart = time;
+        const elapsed = time - window._autoScrollStart;
+        const dur = p.autoScrollDuration || 20;
+        let t = elapsed / dur;
+        if (p.autoScrollLoop) {
+            t = t % 1;
+        } else {
+            t = Math.min(t, 1);
+            if (t >= 1) { p.autoScroll = false; window._autoScrollStart = undefined; }
+        }
+        scrollProgress = t;
+    } else {
+        window._autoScrollStart = undefined;
+    }
+
+    const sm = p.smoothing ?? 0.08;
+    smoothScrollProgress += (scrollProgress - smoothScrollProgress) * sm;
+
+    const currentDepth = startPos + smoothScrollProgress * travelDist;
+
+    camera.position.x = 0;
+    camera.position.y = 0;
+    camera.position.z = currentDepth;
+
+    // Update shader-based clip plane behind camera
+    const clipOffset = p.clipOffset ?? 2;
+    clipUniforms.clipPlaneNormal.value.copy(clipPlane.normal);
+    // Shader discards where dot(worldPos, normal) + constant < 0
+    // With normal (0,0,-1): -z + constant < 0 → z > constant → clips behind
+    clipUniforms.clipPlaneConstant.value = currentDepth + clipOffset;
+    clipUniforms.clipEnabled.value = (p.clippingEnabled ?? true) ? 1.0 : 0.0;
+
+    const ms = p.mouseSensitivity ?? 0.3;
+    camera.lookAt(mx * ms, my * ms, camera.position.z - 15);
+    camera.rotation.z = smoothScrollProgress * Math.PI * 2 * (p.rollAmount ?? 1) + time * (p.rollSpeed ?? 0.05);
+
+    // ─── MORPH TARGET ANIMATION ───
+    // Drive the wave/expand morphs with scroll + time oscillation
+    if (window._morphMeshes) {
+        for (const mesh of window._morphMeshes) {
+            if (!mesh.morphTargetInfluences) continue;
+            const n = mesh.name.toLowerCase();
+
+            // Waves: oscillate with time, modulated by scroll
+            if (n.includes('waves')) {
+                const ws = p.waveSpeed || 0.8;
+                const wa = p.waveAmplitude !== undefined ? p.waveAmplitude : 0.5;
+                mesh.morphTargetInfluences[0] =
+                    0.3 + Math.sin(time * ws + smoothScrollProgress * 10) * wa +
+                    smoothScrollProgress * 0.3;
+            }
+            // Lines: expand with scroll
+            else if (n.includes('lines')) {
+                mesh.morphTargetInfluences[0] =
+                    Math.sin(time * (p.lineSpeed || 0.6) + smoothScrollProgress * 8) * 0.5 + 0.5;
+            }
+            // Balls/spheres: pulse
+            else if (n.includes('ball') || n.includes('spiked')) {
+                mesh.morphTargetInfluences[0] =
+                    Math.sin(time * (p.objectPulseSpeed || 1.2) + smoothScrollProgress * 6) * 0.5 + 0.5;
+            }
+            // Clamp
+            mesh.morphTargetInfluences[0] = Math.max(0, Math.min(1, mesh.morphTargetInfluences[0]));
+        }
+    }
+
+    // ─── SCROLL-DRIVEN COLOR CYCLING (per-group) ───
+    if (window._colorGroups) {
+        const cg = window._colorGroups;
+        const hueBase = (p.hueOffset ?? 0.12) + smoothScrollProgress * (p.hueRange || 2.5) + time * (p.hueSpeed || 0.02);
+        const _c = new THREE.Color();
+
+        // Lines
+        if (p.lineColorManual) {
+            _c.set(p.lineColorManual);
+        } else {
+            _c.setHSL((hueBase + (p.lineHueShift ?? 0)) % 1, p.lineSaturation ?? 1, p.lineLightness ?? 0.6);
+        }
+        for (const m of cg.lineMeshes) m.material.color.copy(_c);
+
+        // Waves
+        if (p.waveColorManual) {
+            _c.set(p.waveColorManual);
+        } else {
+            _c.setHSL((hueBase + (p.waveHueShift ?? 0.33)) % 1, p.waveSaturation ?? 1, p.waveLightness ?? 0.6);
+        }
+        for (const m of cg.waveMeshes) m.material.emissive.copy(_c);
+
+        // Objects
+        if (p.objectColorManual) {
+            _c.set(p.objectColorManual);
+        } else {
+            _c.setHSL((hueBase + (p.objectHueShift ?? 0.17)) % 1, p.objectSaturation ?? 1, p.objectLightness ?? 0.7);
+        }
+        for (const m of cg.objectMeshes) m.material.emissive.copy(_c);
+
+        // Frames
+        if (p.frameColorManual) {
+            _c.set(p.frameColorManual);
+        } else {
+            _c.setHSL((hueBase + (p.frameHueShift ?? 0.5)) % 1, p.frameSaturation ?? 0.8, p.frameLightness ?? 0.6);
+        }
+        for (const m of cg.frameMeshes) m.material.color.copy(_c);
+
+        // Background
+        if (p.bgColorManual) {
+            _c.set(p.bgColorManual);
+        } else {
+            _c.setHSL((hueBase + (p.bgHueShift ?? 0.5)) % 1, p.bgSaturation ?? 1, p.bgLightness ?? 0.35);
+        }
+        scene.background.copy(_c);
+    }
+
+    // Lights orbit around camera, creating dynamic lighting
+    const cz = camera.position.z;
+    const lr = p.lightOrbitRadius || 3;
+    pinkLight.position.set(Math.sin(time * 0.7) * lr, 2, cz + 5 + Math.cos(time * 0.5) * lr);
+    blueLight.position.set(Math.cos(time * 0.6) * lr, -2, cz - 3 + Math.sin(time * 0.4) * lr);
+    greenLight.position.set(-lr * 0.67, Math.sin(time * 0.8) * lr * 0.67, cz + Math.cos(time * 0.3) * 5);
+    purpleLight.position.set(lr * 0.67, Math.cos(time * 0.9) * lr * 0.67, cz - 5 + Math.sin(time * 0.6) * 4);
+
+    bloom.strength = (p.bloomStrength || 0.25) + Math.sin(time * 0.4) * 0.15 + smoothScrollProgress * 0.3;
+
+
+    // Sync text rotation with camera so it's readable when camera reaches it
+    for (const m of textMeshes) {
+        m.quaternion.copy(camera.quaternion);
+    }
+
+    // Film grain
+    grainFrame++;
+    if (grainFrame % 3 === 0) updateGrain();
+
+    composer.render();
+}
+
+animate();
+
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    composer.setSize(window.innerWidth, window.innerHeight);
+    grainCanvas.width = Math.floor(window.innerWidth / 2);
+    grainCanvas.height = Math.floor(window.innerHeight / 2);
+});
+
+// ─── GUI CONTROLS ───
+const params = {
+    // Bloom
+    bloomStrength: 0.25,
+    bloomRadius: 0.6,
+    bloomThreshold: 0.15,
+
+    // Tone mapping
+    exposure: 1.0,
+
+    // Camera
+    fov: 45,
+    mouseSensitivity: 0,
+    rollSpeed: 0,
+    rollAmount: 0.2,
+    smoothing: 0.08,
+
+    // Color cycling — global
+    hueOffset: 0.12,
+    hueSpeed: 0.008,
+    hueRange: 0.3,
+
+    // Per-group hue offsets (from base hue)
+    lineHueShift: 0.0,
+    waveHueShift: 0.33,
+    objectHueShift: 0.17,
+    frameHueShift: 0.5,
+    bgHueShift: 0.5,
+
+    // Per-group saturation & lightness
+    lineSaturation: 1.0,
+    lineLightness: 0.6,
+    waveSaturation: 1.0,
+    waveLightness: 0.6,
+    objectSaturation: 1.0,
+    objectLightness: 0.7,
+    frameSaturation: 0.8,
+    frameLightness: 0.6,
+    bgSaturation: 1.0,
+    bgLightness: 0.35,
+
+    // Emissive intensity
+    waveEmissive: 1.0,
+    objectEmissive: 1.0,
+
+    // Manual color overrides (hex strings, empty = auto-cycle)
+    lineColorManual: '',
+    waveColorManual: '',
+    objectColorManual: '',
+    frameColorManual: '',
+    bgColorManual: '',
+
+    // Morph animation
+    waveSpeed: 0.3,
+    waveAmplitude: 0.42,
+    lineSpeed: 1.25,
+    objectPulseSpeed: 4,
+
+    // Auto-scroll
+    autoScroll: false,
+    autoScrollDuration: 20,
+    autoScrollLoop: false,
+
+    // Clipping
+    clippingEnabled: true,
+    clipOffset: 2,
+
+    // Lights
+    pinkIntensity: 9.0,
+    blueIntensity: 7.0,
+    greenIntensity: 7.5,
+    purpleIntensity: 8.0,
+    lightOrbitRadius: 0.2,
+    ambientIntensity: 0.3,
+    dirLight1Intensity: 1.0,
+    dirLight2Intensity: 1.5,
+
+    // Djembe overlay
+    textFont: 'VG5000',
+    textColor: '#e8e4e0',
+    textOpacity: 1.0,
+    grainOpacity: 0.06,
+    grainScale: 2,
+};
+
+// Expose params so animate() can read them
+window._params = params;
+
+// ─── PRESETS ───
+const PRESETS = {
+    'Neon Vivid': {
+        bloomStrength: 0.25, bloomRadius: 0.6, bloomThreshold: 0.15, exposure: 1.0,
+        hueOffset: 0.12, hueSpeed: 0.008, hueRange: 0.3,
+        lineHueShift: 0.0, waveHueShift: 0.33, objectHueShift: 0.17, frameHueShift: 0.5, bgHueShift: 0.5,
+        lineSaturation: 1.0, lineLightness: 0.6, waveSaturation: 1.0, waveLightness: 0.6,
+        objectSaturation: 1.0, objectLightness: 0.7, frameSaturation: 0.8, frameLightness: 0.6,
+        bgSaturation: 1.0, bgLightness: 0.35, waveEmissive: 1.0, objectEmissive: 1.0,
+        lineColorManual: '', waveColorManual: '', objectColorManual: '', frameColorManual: '', bgColorManual: '',
+        pinkIntensity: 9.0, blueIntensity: 7.0, greenIntensity: 7.5, purpleIntensity: 8.0,
+        lightOrbitRadius: 0.2, ambientIntensity: 0.3, dirLight1Intensity: 1.0, dirLight2Intensity: 1.5,
+        waveSpeed: 0.3, waveAmplitude: 0.42, lineSpeed: 1.25, objectPulseSpeed: 4,
+        rollSpeed: 0, rollAmount: 0.2, fov: 45, mouseSensitivity: 0,
+        textFont: 'VG5000', textColor: '#e8e4e0', textOpacity: 1.0, grainOpacity: 0.06, grainScale: 2,
+    },
+    'Cyberpunk': {
+        bloomStrength: 1.5, bloomRadius: 0.8, bloomThreshold: 0.1, exposure: 1.2,
+        hueOffset: 0.83, hueSpeed: 0.003, hueRange: 0.15,
+        lineHueShift: 0.0, waveHueShift: 0.55, objectHueShift: 0.1, frameHueShift: 0.45, bgHueShift: 0.5,
+        lineSaturation: 1.0, lineLightness: 0.65, waveSaturation: 1.0, waveLightness: 0.5,
+        objectSaturation: 1.0, objectLightness: 0.7, frameSaturation: 0.9, frameLightness: 0.55,
+        bgSaturation: 0.6, bgLightness: 0.05, waveEmissive: 1.5, objectEmissive: 1.3,
+        lineColorManual: '', waveColorManual: '', objectColorManual: '', frameColorManual: '', bgColorManual: '',
+        pinkIntensity: 10.0, blueIntensity: 8.0, greenIntensity: 2.0, purpleIntensity: 9.0,
+        lightOrbitRadius: 0.5, ambientIntensity: 0.1, dirLight1Intensity: 0.5, dirLight2Intensity: 2.0,
+        waveSpeed: 0.5, waveAmplitude: 0.6, lineSpeed: 1.5, objectPulseSpeed: 3,
+        rollSpeed: 0.02, rollAmount: 0.3, fov: 50, mouseSensitivity: 0.2,
+        textFont: 'VG5000', textColor: '#e8e4e0', textOpacity: 1.0, grainOpacity: 0.06, grainScale: 2,
+    },
+    'Acid Trip': {
+        bloomStrength: 0.8, bloomRadius: 1.0, bloomThreshold: 0.05, exposure: 1.5,
+        hueOffset: 0.0, hueSpeed: 0.06, hueRange: 3.0,
+        lineHueShift: 0.0, waveHueShift: 0.25, objectHueShift: 0.5, frameHueShift: 0.75, bgHueShift: 0.12,
+        lineSaturation: 1.0, lineLightness: 0.7, waveSaturation: 1.0, waveLightness: 0.65,
+        objectSaturation: 1.0, objectLightness: 0.75, frameSaturation: 1.0, frameLightness: 0.7,
+        bgSaturation: 1.0, bgLightness: 0.45, waveEmissive: 2.0, objectEmissive: 2.0,
+        lineColorManual: '', waveColorManual: '', objectColorManual: '', frameColorManual: '', bgColorManual: '',
+        pinkIntensity: 8.0, blueIntensity: 8.0, greenIntensity: 8.0, purpleIntensity: 8.0,
+        lightOrbitRadius: 2.0, ambientIntensity: 0.5, dirLight1Intensity: 1.5, dirLight2Intensity: 1.5,
+        waveSpeed: 1.5, waveAmplitude: 0.8, lineSpeed: 2.0, objectPulseSpeed: 3.5,
+        rollSpeed: 0.05, rollAmount: 1.0, fov: 60, mouseSensitivity: 0.5,
+        textFont: 'VG5000', textColor: '#e8e4e0', textOpacity: 1.0, grainOpacity: 0.06, grainScale: 2,
+    },
+    'Midnight Ember': {
+        bloomStrength: 0.6, bloomRadius: 0.5, bloomThreshold: 0.2, exposure: 0.9,
+        hueOffset: 0.0, hueSpeed: 0.004, hueRange: 0.12,
+        lineHueShift: 0.05, waveHueShift: 0.02, objectHueShift: 0.08, frameHueShift: 0.0, bgHueShift: 0.5,
+        lineSaturation: 1.0, lineLightness: 0.55, waveSaturation: 0.9, waveLightness: 0.45,
+        objectSaturation: 1.0, objectLightness: 0.6, frameSaturation: 0.7, frameLightness: 0.4,
+        bgSaturation: 0.3, bgLightness: 0.03, waveEmissive: 0.8, objectEmissive: 1.2,
+        lineColorManual: '', waveColorManual: '', objectColorManual: '', frameColorManual: '', bgColorManual: '',
+        pinkIntensity: 10.0, blueIntensity: 2.0, greenIntensity: 1.0, purpleIntensity: 4.0,
+        lightOrbitRadius: 0.3, ambientIntensity: 0.05, dirLight1Intensity: 0.8, dirLight2Intensity: 0.3,
+        waveSpeed: 0.2, waveAmplitude: 0.3, lineSpeed: 0.8, objectPulseSpeed: 2,
+        rollSpeed: 0.01, rollAmount: 0.15, fov: 42, mouseSensitivity: 0.1,
+        textFont: 'VG5000', textColor: '#e8e4e0', textOpacity: 1.0, grainOpacity: 0.06, grainScale: 2,
+    },
+    'Frozen Pulse': {
+        bloomStrength: 0.9, bloomRadius: 0.7, bloomThreshold: 0.15, exposure: 1.1,
+        hueOffset: 0.55, hueSpeed: 0.005, hueRange: 0.2,
+        lineHueShift: 0.0, waveHueShift: 0.08, objectHueShift: 0.15, frameHueShift: 0.4, bgHueShift: 0.5,
+        lineSaturation: 0.7, lineLightness: 0.7, waveSaturation: 0.6, waveLightness: 0.6,
+        objectSaturation: 0.8, objectLightness: 0.75, frameSaturation: 0.5, frameLightness: 0.65,
+        bgSaturation: 0.4, bgLightness: 0.08, waveEmissive: 1.2, objectEmissive: 1.0,
+        lineColorManual: '', waveColorManual: '', objectColorManual: '', frameColorManual: '', bgColorManual: '',
+        pinkIntensity: 3.0, blueIntensity: 10.0, greenIntensity: 6.0, purpleIntensity: 7.0,
+        lightOrbitRadius: 1.0, ambientIntensity: 0.2, dirLight1Intensity: 1.2, dirLight2Intensity: 2.5,
+        waveSpeed: 0.15, waveAmplitude: 0.5, lineSpeed: 0.6, objectPulseSpeed: 1.5,
+        rollSpeed: 0.008, rollAmount: 0.1, fov: 48, mouseSensitivity: 0.15,
+        textFont: 'VG5000', textColor: '#e8e4e0', textOpacity: 1.0, grainOpacity: 0.06, grainScale: 2,
+    },
+    'Vaporwave': {
+        bloomStrength: 1.2, bloomRadius: 1.0, bloomThreshold: 0.08, exposure: 1.3,
+        hueOffset: 0.75, hueSpeed: 0.01, hueRange: 0.25,
+        lineHueShift: 0.0, waveHueShift: 0.15, objectHueShift: 0.4, frameHueShift: 0.6, bgHueShift: 0.3,
+        lineSaturation: 0.8, lineLightness: 0.65, waveSaturation: 0.7, waveLightness: 0.55,
+        objectSaturation: 0.9, objectLightness: 0.7, frameSaturation: 0.6, frameLightness: 0.6,
+        bgSaturation: 0.5, bgLightness: 0.15, waveEmissive: 1.3, objectEmissive: 1.1,
+        lineColorManual: '', waveColorManual: '', objectColorManual: '', frameColorManual: '', bgColorManual: '',
+        pinkIntensity: 8.0, blueIntensity: 5.0, greenIntensity: 3.0, purpleIntensity: 9.0,
+        lightOrbitRadius: 0.8, ambientIntensity: 0.3, dirLight1Intensity: 1.0, dirLight2Intensity: 2.0,
+        waveSpeed: 0.2, waveAmplitude: 0.35, lineSpeed: 0.9, objectPulseSpeed: 2.5,
+        rollSpeed: 0.015, rollAmount: 0.25, fov: 55, mouseSensitivity: 0.3,
+        textFont: 'VG5000', textColor: '#e8e4e0', textOpacity: 1.0, grainOpacity: 0.06, grainScale: 2,
+    },
+};
+
+// Load user presets from localStorage
+const userPresets = JSON.parse(localStorage.getItem('tunnelPresets') || '{}');
+
+function applyPreset(preset) {
+    // Apply tunnel params
+    for (const [key, val] of Object.entries(preset)) {
+        if (key in params) params[key] = val;
+    }
+    // Apply djembe side effects
+    rebuildTextMeshes();
+    if (window._textMeshes) window._textMeshes.forEach(m => { m.material.opacity = params.textOpacity; });
+    const gc = document.getElementById('grain');
+    if (gc) gc.style.opacity = params.grainOpacity;
+    // Apply tunnel side effects
+    camera.fov = params.fov; camera.updateProjectionMatrix();
+    renderer.toneMappingExposure = params.exposure;
+    bloom.strength = params.bloomStrength;
+    bloom.radius = params.bloomRadius;
+    bloom.threshold = params.bloomThreshold;
+    dirLight.intensity = params.dirLight1Intensity;
+    dirLight2.intensity = params.dirLight2Intensity;
+    pinkLight.intensity = params.pinkIntensity;
+    blueLight.intensity = params.blueIntensity;
+    greenLight.intensity = params.greenIntensity;
+    purpleLight.intensity = params.purpleIntensity;
+    const amb = scene.children.find(c => c.isAmbientLight);
+    if (amb) amb.intensity = params.ambientIntensity;
+    if (window._colorGroups) {
+        for (const m of window._colorGroups.waveMeshes) m.material.emissiveIntensity = params.waveEmissive;
+        for (const m of window._colorGroups.objectMeshes) m.material.emissiveIntensity = params.objectEmissive;
+    }
+    // Refresh all GUI controllers to show new values
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+}
+
+function saveUserPreset(name) {
+    const snapshot = {};
+    for (const key of Object.keys(params)) snapshot[key] = params[key];
+    userPresets[name] = snapshot;
+    localStorage.setItem('tunnelPresets', JSON.stringify(userPresets));
+    rebuildPresetList();
+}
+
+function deleteUserPreset(name) {
+    delete userPresets[name];
+    localStorage.setItem('tunnelPresets', JSON.stringify(userPresets));
+    rebuildPresetList();
+}
+
+// Apply initial values that differ from Three.js defaults
+camera.fov = params.fov;
+camera.updateProjectionMatrix();
+renderer.toneMappingExposure = params.exposure;
+bloom.strength = params.bloomStrength;
+bloom.radius = params.bloomRadius;
+bloom.threshold = params.bloomThreshold;
+dirLight.intensity = params.dirLight1Intensity;
+dirLight2.intensity = params.dirLight2Intensity;
+pinkLight.intensity = params.pinkIntensity;
+blueLight.intensity = params.blueIntensity;
+greenLight.intensity = params.greenIntensity;
+purpleLight.intensity = params.purpleIntensity;
+scene.children.find(c => c.isAmbientLight).intensity = params.ambientIntensity;
+
+const gui = new GUI({ title: 'Tunnel Controls', width: 310 });
+
+// ─── PRESETS FOLDER ───
+const presetState = { current: 'Neon Vivid', saveName: '' };
+const fPreset = gui.addFolder('Presets');
+let presetController;
+
+function rebuildPresetList() {
+    const allNames = [...Object.keys(PRESETS), ...Object.keys(userPresets).map(n => '* ' + n)];
+    if (presetController) presetController.destroy();
+    presetController = fPreset.add(presetState, 'current', allNames).name('Load Preset').onChange(v => {
+        const name = v.startsWith('* ') ? v.slice(2) : v;
+        const preset = PRESETS[name] || userPresets[name];
+        if (preset) applyPreset(preset);
+    });
+}
+rebuildPresetList();
+
+fPreset.add(presetState, 'saveName').name('Preset Name');
+fPreset.add({ save() {
+    const n = presetState.saveName.trim();
+    if (!n) { alert('Enter a name first'); return; }
+    saveUserPreset(n);
+    presetState.saveName = '';
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+}}, 'save').name('Save Current');
+fPreset.add({ del() {
+    const n = presetState.current.startsWith('* ') ? presetState.current.slice(2) : presetState.current;
+    if (PRESETS[n]) { alert('Cannot delete built-in presets'); return; }
+    if (userPresets[n]) { deleteUserPreset(n); presetState.current = 'Neon Vivid'; }
+}}, 'del').name('Delete Selected');
+fPreset.add({ copy() {
+    const snapshot = {};
+    for (const key of Object.keys(params)) snapshot[key] = params[key];
+    navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2));
+}}, 'copy').name('Copy to Clipboard');
+
+fPreset.add({ exportJSON() {
+    const snapshot = {};
+    for (const key of Object.keys(params)) snapshot[key] = params[key];
+    const name = presetState.saveName.trim() || 'preset';
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name + '.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+}}, 'exportJSON').name('Export to File');
+
+fPreset.add({ importJSON() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = () => {
+        const file = input.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            try {
+                const preset = JSON.parse(reader.result);
+                const name = file.name.replace(/\.json$/, '');
+                userPresets[name] = preset;
+                localStorage.setItem('tunnelPresets', JSON.stringify(userPresets));
+                rebuildPresetList();
+                applyPreset(preset);
+                presetState.current = '* ' + name;
+                gui.controllersRecursive().forEach(c => c.updateDisplay());
+            } catch (e) { alert('Invalid JSON file'); }
+        };
+        reader.readAsText(file);
+    };
+    input.click();
+}}, 'importJSON').name('Import from File');
+
+const fBloom = gui.addFolder('Bloom');
+fBloom.add(params, 'bloomStrength', 0, 3, 0.01).name('Strength').onChange(v => bloom.strength = v);
+fBloom.add(params, 'bloomRadius', 0, 2, 0.01).name('Radius').onChange(v => bloom.radius = v);
+fBloom.add(params, 'bloomThreshold', 0, 1, 0.01).name('Threshold').onChange(v => bloom.threshold = v);
+fBloom.add(params, 'exposure', 0.1, 5, 0.01).name('Exposure').onChange(v => renderer.toneMappingExposure = v);
+
+const fCamera = gui.addFolder('Camera');
+fCamera.add(params, 'fov', 30, 150, 1).name('FOV').onChange(v => { camera.fov = v; camera.updateProjectionMatrix(); });
+fCamera.add(params, 'mouseSensitivity', 0, 2, 0.01).name('Mouse Sensitivity');
+fCamera.add(params, 'rollSpeed', 0, 0.3, 0.005).name('Roll Speed');
+fCamera.add(params, 'rollAmount', 0, 4, 0.1).name('Roll Turns');
+fCamera.add(params, 'smoothing', 0.01, 0.3, 0.005).name('Smoothing');
+
+const fAutoScroll = gui.addFolder('Auto-Scroll / Record');
+let autoScrollCtrl;
+autoScrollCtrl = fAutoScroll.add(params, 'autoScroll').name('Play').onChange(v => {
+    if (v) { window._autoScrollStart = undefined; scrollProgress = 0; smoothScrollProgress = 0; window.scrollTo(0, 0); }
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+});
+fAutoScroll.add(params, 'autoScrollDuration', 5, 120, 1).name('Duration (s)');
+fAutoScroll.add(params, 'autoScrollLoop').name('Loop');
+
+// ── Built-in video recorder
+let mediaRecorder = null;
+let recordedChunks = [];
+const recordState = { recording: false };
+
+fAutoScroll.add({ startRecord() {
+    const stream = canvas.captureStream(60);
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9', videoBitsPerSecond: 8000000 });
+    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'tunnel-' + Date.now() + '.webm';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        recordState.recording = false;
+    };
+    mediaRecorder.start();
+    recordState.recording = true;
+    // Auto-start scroll
+    params.autoScroll = true;
+    window._autoScrollStart = undefined;
+    scrollProgress = 0; smoothScrollProgress = 0; window.scrollTo(0, 0);
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+}}, 'startRecord').name('Record + Play');
+
+fAutoScroll.add({ stopRecord() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+        params.autoScroll = false;
+        gui.controllersRecursive().forEach(c => c.updateDisplay());
+    }
+}}, 'stopRecord').name('Stop & Save');
+
+const fClip = gui.addFolder('Clipping');
+fClip.add(params, 'clippingEnabled').name('Enabled');
+fClip.add(params, 'clipOffset', 0, 50, 0.5).name('Reveal Distance');
+
+// ─── PER-GROUP COLOR CONTROLS ───
+const fColor = gui.addFolder('Color Cycling');
+fColor.add(params, 'hueOffset', 0, 1, 0.01).name('Hue Start');
+fColor.add(params, 'hueSpeed', 0, 0.2, 0.001).name('Hue Drift Speed');
+fColor.add(params, 'hueRange', 0, 5, 0.1).name('Hue Range (scroll)');
+
+const fLines = fColor.addFolder('Lines');
+fLines.add(params, 'lineHueShift', 0, 1, 0.01).name('Hue Shift');
+fLines.add(params, 'lineSaturation', 0, 1, 0.01).name('Saturation');
+fLines.add(params, 'lineLightness', 0.1, 1, 0.01).name('Lightness');
+fLines.addColor(params, 'lineColorManual').name('Override Color');
+fLines.add({ clear() { params.lineColorManual = ''; gui.controllersRecursive().forEach(c => c.updateDisplay()); }}, 'clear').name('Clear Override');
+
+const fWaves = fColor.addFolder('Waves');
+fWaves.add(params, 'waveHueShift', 0, 1, 0.01).name('Hue Shift');
+fWaves.add(params, 'waveSaturation', 0, 1, 0.01).name('Saturation');
+fWaves.add(params, 'waveLightness', 0.1, 1, 0.01).name('Lightness');
+fWaves.add(params, 'waveEmissive', 0, 3, 0.05).name('Emissive Intensity').onChange(v => {
+    if (window._colorGroups) for (const m of window._colorGroups.waveMeshes) m.material.emissiveIntensity = v;
+});
+fWaves.addColor(params, 'waveColorManual').name('Override Color');
+fWaves.add({ clear() { params.waveColorManual = ''; gui.controllersRecursive().forEach(c => c.updateDisplay()); }}, 'clear').name('Clear Override');
+
+const fObjects = fColor.addFolder('Objects');
+fObjects.add(params, 'objectHueShift', 0, 1, 0.01).name('Hue Shift');
+fObjects.add(params, 'objectSaturation', 0, 1, 0.01).name('Saturation');
+fObjects.add(params, 'objectLightness', 0.1, 1, 0.01).name('Lightness');
+fObjects.add(params, 'objectEmissive', 0, 3, 0.05).name('Emissive Intensity').onChange(v => {
+    if (window._colorGroups) for (const m of window._colorGroups.objectMeshes) m.material.emissiveIntensity = v;
+});
+fObjects.addColor(params, 'objectColorManual').name('Override Color');
+fObjects.add({ clear() { params.objectColorManual = ''; gui.controllersRecursive().forEach(c => c.updateDisplay()); }}, 'clear').name('Clear Override');
+
+const fFrames = fColor.addFolder('Frames');
+fFrames.add(params, 'frameHueShift', 0, 1, 0.01).name('Hue Shift');
+fFrames.add(params, 'frameSaturation', 0, 1, 0.01).name('Saturation');
+fFrames.add(params, 'frameLightness', 0.1, 1, 0.01).name('Lightness');
+fFrames.addColor(params, 'frameColorManual').name('Override Color');
+fFrames.add({ clear() { params.frameColorManual = ''; gui.controllersRecursive().forEach(c => c.updateDisplay()); }}, 'clear').name('Clear Override');
+
+const fBg = fColor.addFolder('Background');
+fBg.add(params, 'bgHueShift', 0, 1, 0.01).name('Hue Shift');
+fBg.add(params, 'bgSaturation', 0, 1, 0.01).name('Saturation');
+fBg.add(params, 'bgLightness', 0, 0.8, 0.01).name('Lightness');
+fBg.addColor(params, 'bgColorManual').name('Override Color');
+fBg.add({ clear() { params.bgColorManual = ''; gui.controllersRecursive().forEach(c => c.updateDisplay()); }}, 'clear').name('Clear Override');
+
+fColor.close();
+
+const fMorph = gui.addFolder('Morph Animation');
+fMorph.add(params, 'waveSpeed', 0, 3, 0.05).name('Wave Speed');
+fMorph.add(params, 'waveAmplitude', 0, 1, 0.01).name('Wave Amplitude');
+fMorph.add(params, 'lineSpeed', 0, 3, 0.05).name('Line Speed');
+fMorph.add(params, 'objectPulseSpeed', 0, 4, 0.05).name('Object Pulse');
+fMorph.close();
+
+const fLights = gui.addFolder('Lights');
+fLights.add(params, 'ambientIntensity', 0, 2, 0.05).name('Ambient').onChange(v => scene.children.find(c => c.isAmbientLight).intensity = v);
+fLights.add(params, 'dirLight1Intensity', 0, 5, 0.1).name('Dir Light 1').onChange(v => dirLight.intensity = v);
+fLights.add(params, 'dirLight2Intensity', 0, 5, 0.1).name('Dir Light 2').onChange(v => dirLight2.intensity = v);
+fLights.add(params, 'pinkIntensity', 0, 10, 0.1).name('Pink').onChange(v => pinkLight.intensity = v);
+fLights.add(params, 'blueIntensity', 0, 10, 0.1).name('Blue').onChange(v => blueLight.intensity = v);
+fLights.add(params, 'greenIntensity', 0, 10, 0.1).name('Green').onChange(v => greenLight.intensity = v);
+fLights.add(params, 'purpleIntensity', 0, 10, 0.1).name('Purple').onChange(v => purpleLight.intensity = v);
+fLights.add(params, 'lightOrbitRadius', 0, 10, 0.1).name('Orbit Radius');
+fLights.close();
+
+// ─── DJEMBE OVERLAY CONTROLS ───
+// Djembe params are in the main params object
+const djembeParams = params; // alias for GUI bindings
+
+const fDjembe = gui.addFolder('Djembe Overlay');
+
+const fDjText = fDjembe.addFolder('Text');
+fDjText.add(djembeParams, 'textFont', [
+    'VG5000', 'Flor de Ruina Flor', 'Flor de Ruina Fractura',
+    'Flor de Ruina Germen', 'Flor de Ruina Ruina', 'Flor de Ruina Semilla', 'Inter'
+]).name('Font').onChange(() => rebuildTextMeshes());
+fDjText.addColor(djembeParams, 'textColor').name('Color').onChange(() => rebuildTextMeshes());
+fDjText.add(djembeParams, 'textOpacity', 0, 1, 0.01).name('Opacity').onChange(v => {
+    textMeshes.forEach(m => { m.material.opacity = v; });
+});
+
+fDjembe.add(djembeParams, 'grainOpacity', 0, 0.3, 0.005).name('Grain').onChange(v => {
+    grainCanvas.style.opacity = v;
+});
+fDjembe.add(djembeParams, 'grainScale', 1, 16, 0.5).name('Grain Size');
+</script>
+</body>
+</html>

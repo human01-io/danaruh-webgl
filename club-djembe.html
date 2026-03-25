@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Club Djembe — Ikonika / Siraya / DJ Stolen</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            overflow: hidden;
+            background: #000;
+            font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+            cursor: crosshair;
+        }
+        canvas { display: block; }
+
+        #text-layer {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 10;
+            mix-blend-mode: difference;
+        }
+
+        .flier-text {
+            position: absolute;
+            color: #e8e4e0;
+            letter-spacing: 0.04em;
+            white-space: nowrap;
+        }
+
+        .club-djembe {
+            top: 5%;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: clamp(3rem, 10vw, 8rem);
+            font-weight: 900;
+            letter-spacing: 0.15em;
+        }
+
+        .ikonika {
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: clamp(2rem, 6vw, 5rem);
+            font-weight: 700;
+        }
+
+        .siraya {
+            top: 60%;
+            left: 15%;
+            font-size: clamp(1rem, 2.5vw, 2rem);
+            font-weight: 400;
+        }
+
+        .dj-stolen {
+            top: 60%;
+            right: 15%;
+            font-size: clamp(1rem, 2.5vw, 2rem);
+            font-weight: 400;
+        }
+
+        .date {
+            bottom: 6%;
+            left: 8%;
+            font-size: clamp(1.2rem, 3vw, 2.5rem);
+            font-weight: 700;
+        }
+
+        .venue {
+            bottom: 6%;
+            right: 8%;
+            font-size: clamp(1.2rem, 3vw, 2.5rem);
+            font-weight: 700;
+        }
+
+        #grain {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 15;
+            opacity: 0.06;
+            mix-blend-mode: overlay;
+        }
+    </style>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+
+<div id="text-layer">
+    <div class="flier-text club-djembe">club&nbsp;&nbsp;&nbsp;djembe</div>
+    <div class="flier-text ikonika">Ikonika</div>
+    <div class="flier-text siraya">Siraya</div>
+    <div class="flier-text dj-stolen">DJ Stolen</div>
+    <div class="flier-text date">31 October</div>
+    <div class="flier-text venue">The Love Inn</div>
+</div>
+
+<canvas id="grain"></canvas>
+
+<!-- Connection lines vertex shader -->
+<script id="lineVertex" type="x-shader/x-vertex">
+    attribute vec3 aColor;
+    attribute float aAlpha;
+    varying vec3 vColor;
+    varying float vAlpha;
+    void main() {
+        vColor = aColor;
+        vAlpha = aAlpha;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+</script>
+
+<script id="lineFragment" type="x-shader/x-fragment">
+    varying vec3 vColor;
+    varying float vAlpha;
+    void main() {
+        gl_FragColor = vec4(vColor, vAlpha);
+    }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
+const textLayer = document.getElementById('text-layer');
+const textElements = document.querySelectorAll('.flier-text');
+
+// ─── RENDERER ────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x050508);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(0, 0, 30);
+
+// ─── POST-PROCESSING ────────────────────────────────────
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    0.8, 0.4, 0.3
+);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
+
+// ─── COLOR PALETTE ──────────────────────────────────────
+const palette = [
+    new THREE.Color('#ff006e'),
+    new THREE.Color('#8338ec'),
+    new THREE.Color('#3a86ff'),
+    new THREE.Color('#06d6a0'),
+    new THREE.Color('#ffbe0b'),
+    new THREE.Color('#fb5607'),
+    new THREE.Color('#ff0a54'),
+    new THREE.Color('#00f5d4'),
+    new THREE.Color('#e63946'),
+    new THREE.Color('#a8dadc'),
+    new THREE.Color('#f1faee'),
+    new THREE.Color('#457b9d'),
+];
+
+// ─── SHAPE GEOMETRIES ───────────────────────────────────
+const geometries = [
+    new THREE.IcosahedronGeometry(0.4, 0),
+    new THREE.OctahedronGeometry(0.4, 0),
+    new THREE.TetrahedronGeometry(0.45, 0),
+    new THREE.BoxGeometry(0.5, 0.5, 0.5),
+    new THREE.DodecahedronGeometry(0.35, 0),
+    new THREE.SphereGeometry(0.3, 8, 6),
+    new THREE.ConeGeometry(0.3, 0.6, 5),
+    new THREE.TorusGeometry(0.25, 0.1, 8, 12),
+    new THREE.CylinderGeometry(0.15, 0.15, 0.6, 6),
+    new THREE.TorusKnotGeometry(0.2, 0.08, 32, 8),
+];
+
+// ─── SHAPES ─────────────────────────────────────────────
+const SHAPE_COUNT = 180;
+const FIELD_W = 40;      // spread on X
+const FIELD_H = 60;      // total height of the looping field
+const HALF_H = FIELD_H / 2;
+const CONNECTION_DIST = 4.5;
+
+const shapes = [];
+const shapeGroup = new THREE.Group();
+scene.add(shapeGroup);
+
+for (let i = 0; i < SHAPE_COUNT; i++) {
+    const geo = geometries[Math.floor(Math.random() * geometries.length)];
+    const col = palette[Math.floor(Math.random() * palette.length)];
+
+    const mat = new THREE.MeshStandardMaterial({
+        color: col,
+        emissive: col,
+        emissiveIntensity: 0.3,
+        metalness: 0.4,
+        roughness: 0.5,
+        transparent: true,
+        opacity: 0.85,
+        blending: THREE.CustomBlending,
+        blendSrc: THREE.SrcAlphaFactor,
+        blendDst: THREE.OneMinusSrcAlphaFactor,
+        blendEquation: THREE.AddEquation,
+    });
+
+    const mesh = new THREE.Mesh(geo, mat);
+
+    // Random position in field
+    mesh.position.set(
+        (Math.random() - 0.5) * FIELD_W,
+        (Math.random() - 0.5) * FIELD_H,
+        (Math.random() - 0.5) * 15
+    );
+    mesh.rotation.set(
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI * 2
+    );
+
+    const s = 0.5 + Math.random() * 1.0;
+    mesh.scale.setScalar(s);
+
+    mesh.userData = {
+        color: col,
+        baseX: mesh.position.x,
+        baseZ: mesh.position.z,
+        driftPhase: Math.random() * Math.PI * 2,
+        driftSpeed: 0.2 + Math.random() * 0.5,
+        driftAmplitude: 0.5 + Math.random() * 1.5,
+        rotSpeed: new THREE.Vector3(
+            (Math.random() - 0.5) * 1.5,
+            (Math.random() - 0.5) * 1.5,
+            (Math.random() - 0.5) * 1.5
+        ),
+    };
+
+    shapeGroup.add(mesh);
+    shapes.push(mesh);
+}
+
+// ─── LIGHTS ─────────────────────────────────────────────
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+scene.add(ambientLight);
+
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+dirLight.position.set(5, 10, 8);
+scene.add(dirLight);
+
+const pointLight1 = new THREE.PointLight('#ff006e', 2, 50, 1);
+pointLight1.position.set(-10, 0, 10);
+scene.add(pointLight1);
+
+const pointLight2 = new THREE.PointLight('#3a86ff', 2, 50, 1);
+pointLight2.position.set(10, 0, 10);
+scene.add(pointLight2);
+
+// ─── CONNECTION LINES ───────────────────────────────────
+const MAX_LINES = 800;
+const linePositions = new Float32Array(MAX_LINES * 6);
+const lineColors = new Float32Array(MAX_LINES * 6);
+const lineAlphas = new Float32Array(MAX_LINES * 2);
+
+const lineGeo = new THREE.BufferGeometry();
+lineGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+lineGeo.setAttribute('aColor', new THREE.BufferAttribute(lineColors, 3));
+lineGeo.setAttribute('aAlpha', new THREE.BufferAttribute(lineAlphas, 1));
+
+const lineMat = new THREE.ShaderMaterial({
+    vertexShader: document.getElementById('lineVertex').textContent,
+    fragmentShader: document.getElementById('lineFragment').textContent,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+});
+
+const linesMesh = new THREE.LineSegments(lineGeo, lineMat);
+scene.add(linesMesh);
+
+function updateConnections() {
+    let idx = 0;
+    for (let i = 0; i < shapes.length && idx < MAX_LINES; i++) {
+        const a = shapes[i];
+        for (let j = i + 1; j < shapes.length && idx < MAX_LINES; j++) {
+            const b = shapes[j];
+            const dist = a.position.distanceTo(b.position);
+            if (dist < CONNECTION_DIST) {
+                const alpha = (1.0 - dist / CONNECTION_DIST) * 0.4;
+                const i6 = idx * 6;
+                const i2 = idx * 2;
+
+                linePositions[i6]     = a.position.x;
+                linePositions[i6 + 1] = a.position.y;
+                linePositions[i6 + 2] = a.position.z;
+                linePositions[i6 + 3] = b.position.x;
+                linePositions[i6 + 4] = b.position.y;
+                linePositions[i6 + 5] = b.position.z;
+
+                // Blend the two shape colors
+                const ca = a.userData.color;
+                const cb = b.userData.color;
+                lineColors[i6]     = (ca.r + cb.r) * 0.5;
+                lineColors[i6 + 1] = (ca.g + cb.g) * 0.5;
+                lineColors[i6 + 2] = (ca.b + cb.b) * 0.5;
+                lineColors[i6 + 3] = (ca.r + cb.r) * 0.5;
+                lineColors[i6 + 4] = (ca.g + cb.g) * 0.5;
+                lineColors[i6 + 5] = (ca.b + cb.b) * 0.5;
+
+                lineAlphas[i2]     = alpha;
+                lineAlphas[i2 + 1] = alpha;
+                idx++;
+            }
+        }
+    }
+    // Zero out the rest
+    for (let i = idx * 6; i < MAX_LINES * 6; i++) linePositions[i] = 0;
+    for (let i = idx * 2; i < MAX_LINES * 2; i++) lineAlphas[i] = 0;
+
+    lineGeo.attributes.position.needsUpdate = true;
+    lineGeo.attributes.aColor.needsUpdate = true;
+    lineGeo.attributes.aAlpha.needsUpdate = true;
+    lineGeo.setDrawRange(0, idx * 2);
+}
+
+// ─── BLEND FACTOR MAPS (from webgl_materials_blending_custom) ──
+const blendSrcFactors = {
+    'Zero': THREE.ZeroFactor,
+    'One': THREE.OneFactor,
+    'SrcColor': THREE.SrcColorFactor,
+    'OneMinusSrcColor': THREE.OneMinusSrcColorFactor,
+    'SrcAlpha': THREE.SrcAlphaFactor,
+    'OneMinusSrcAlpha': THREE.OneMinusSrcAlphaFactor,
+    'DstAlpha': THREE.DstAlphaFactor,
+    'OneMinusDstAlpha': THREE.OneMinusDstAlphaFactor,
+    'DstColor': THREE.DstColorFactor,
+    'OneMinusDstColor': THREE.OneMinusDstColorFactor,
+    'SrcAlphaSaturate': THREE.SrcAlphaSaturateFactor,
+};
+
+const blendDstFactors = {
+    'Zero': THREE.ZeroFactor,
+    'One': THREE.OneFactor,
+    'SrcColor': THREE.SrcColorFactor,
+    'OneMinusSrcColor': THREE.OneMinusSrcColorFactor,
+    'SrcAlpha': THREE.SrcAlphaFactor,
+    'OneMinusSrcAlpha': THREE.OneMinusSrcAlphaFactor,
+    'DstAlpha': THREE.DstAlphaFactor,
+    'OneMinusDstAlpha': THREE.OneMinusDstAlphaFactor,
+    'DstColor': THREE.DstColorFactor,
+    'OneMinusDstColor': THREE.OneMinusDstColorFactor,
+};
+
+const blendEquations = {
+    'Add': THREE.AddEquation,
+    'Subtract': THREE.SubtractEquation,
+    'ReverseSubtract': THREE.ReverseSubtractEquation,
+    'Min': THREE.MinEquation,
+    'Max': THREE.MaxEquation,
+};
+
+// Presets that mimic familiar Photoshop-style looks
+const blendPresets = {
+    'Normal (SrcAlpha)': { src: 'SrcAlpha', dst: 'OneMinusSrcAlpha', eq: 'Add' },
+    'Additive Glow': { src: 'SrcAlpha', dst: 'One', eq: 'Add' },
+    'Multiply': { src: 'DstColor', dst: 'Zero', eq: 'Add' },
+    'Screen': { src: 'One', dst: 'OneMinusSrcColor', eq: 'Add' },
+    'Soft Light': { src: 'OneMinusDstColor', dst: 'One', eq: 'Add' },
+    'Ghost': { src: 'SrcAlpha', dst: 'DstAlpha', eq: 'Add' },
+    'Invert': { src: 'OneMinusDstColor', dst: 'OneMinusSrcColor', eq: 'Add' },
+    'Burn': { src: 'DstColor', dst: 'OneMinusSrcAlpha', eq: 'ReverseSubtract' },
+    'X-Ray': { src: 'SrcAlphaSaturate', dst: 'One', eq: 'Add' },
+    'Neon': { src: 'One', dst: 'One', eq: 'Add' },
+    'Darken Only': { src: 'One', dst: 'One', eq: 'Min' },
+    'Lighten Only': { src: 'One', dst: 'One', eq: 'Max' },
+    'Subtract': { src: 'One', dst: 'One', eq: 'Subtract' },
+};
+
+function applyBlendToShapes(src, dst, eq) {
+    shapes.forEach(s => {
+        s.material.blending = THREE.CustomBlending;
+        s.material.blendSrc = blendSrcFactors[src];
+        s.material.blendDst = blendDstFactors[dst];
+        s.material.blendEquation = blendEquations[eq];
+        s.material.needsUpdate = true;
+    });
+}
+
+// CSS blend modes for the text layer
+const cssBlendModes = [
+    'normal', 'multiply', 'screen', 'overlay',
+    'darken', 'lighten', 'color-dodge', 'color-burn',
+    'hard-light', 'soft-light', 'difference', 'exclusion',
+    'hue', 'saturation', 'color', 'luminosity'
+];
+
+// ─── GUI ────────────────────────────────────────────────
+const params = {
+    // Text (CSS)
+    textBlendMode: 'difference',
+    textColor: '#e8e4e0',
+    textOpacity: 1.0,
+    // Shape custom blending (WebGL)
+    blendPreset: 'Normal (SrcAlpha)',
+    blendSrc: 'SrcAlpha',
+    blendDst: 'OneMinusSrcAlpha',
+    blendEquation: 'Add',
+    // Shape appearance
+    shapeOpacity: 0.85,
+    emissiveIntensity: 0.3,
+    // Motion
+    scrollSpeed: 3.0,
+    shapeSpinSpeed: 1.0,
+    driftAmount: 1.0,
+    // Connections
+    connectionDist: CONNECTION_DIST,
+    connectionOpacity: 0.4,
+    // Post
+    bloomStrength: 0.8,
+    bloomRadius: 0.4,
+    bloomThreshold: 0.3,
+    exposure: 1.2,
+    bgColor: '#050508',
+};
+
+const gui = new GUI({ title: 'Controls' });
+
+// ── Text (CSS blend modes)
+const textFolder = gui.addFolder('Text Blending');
+textFolder.add(params, 'textBlendMode', cssBlendModes).name('blend mode').onChange((v) => {
+    textLayer.style.mixBlendMode = v;
+});
+textFolder.addColor(params, 'textColor').name('color').onChange((v) => {
+    textElements.forEach(el => { el.style.color = v; });
+});
+textFolder.add(params, 'textOpacity', 0, 1, 0.01).name('opacity').onChange((v) => {
+    textLayer.style.opacity = v;
+});
+
+// ── Shape Custom Blending (WebGL — from materials_blending_custom)
+const blendFolder = gui.addFolder('Shape Blending (WebGL)');
+
+// Presets dropdown
+const presetCtrl = blendFolder.add(params, 'blendPreset', Object.keys(blendPresets)).name('preset').onChange((v) => {
+    const p = blendPresets[v];
+    params.blendSrc = p.src;
+    params.blendDst = p.dst;
+    params.blendEquation = p.eq;
+    srcCtrl.updateDisplay();
+    dstCtrl.updateDisplay();
+    eqCtrl.updateDisplay();
+    applyBlendToShapes(p.src, p.dst, p.eq);
+});
+
+// Manual controls
+const srcCtrl = blendFolder.add(params, 'blendSrc', Object.keys(blendSrcFactors)).name('blendSrc').onChange((v) => {
+    applyBlendToShapes(v, params.blendDst, params.blendEquation);
+});
+const dstCtrl = blendFolder.add(params, 'blendDst', Object.keys(blendDstFactors)).name('blendDst').onChange((v) => {
+    applyBlendToShapes(params.blendSrc, v, params.blendEquation);
+});
+const eqCtrl = blendFolder.add(params, 'blendEquation', Object.keys(blendEquations)).name('equation').onChange((v) => {
+    applyBlendToShapes(params.blendSrc, params.blendDst, v);
+});
+
+// ── Shape appearance
+const shapeFolder = gui.addFolder('Shapes');
+shapeFolder.add(params, 'shapeOpacity', 0, 1, 0.01).name('opacity').onChange((v) => {
+    shapes.forEach(s => { s.material.opacity = v; });
+});
+shapeFolder.add(params, 'emissiveIntensity', 0, 2, 0.01).name('glow').onChange((v) => {
+    shapes.forEach(s => { s.material.emissiveIntensity = v; });
+});
+
+// ── Motion
+const motionFolder = gui.addFolder('Motion');
+motionFolder.add(params, 'scrollSpeed', 0, 15, 0.1).name('scroll speed');
+motionFolder.add(params, 'shapeSpinSpeed', 0, 5, 0.1).name('spin speed');
+motionFolder.add(params, 'driftAmount', 0, 5, 0.1).name('drift');
+
+// ── Connections
+const connFolder = gui.addFolder('Connections');
+connFolder.add(params, 'connectionDist', 1, 12, 0.1).name('bond distance');
+connFolder.add(params, 'connectionOpacity', 0, 1, 0.01).name('line opacity');
+
+// ── Post-processing
+const postFolder = gui.addFolder('Post-Processing');
+postFolder.add(params, 'bloomStrength', 0, 3, 0.01).onChange((v) => { bloomPass.strength = v; });
+postFolder.add(params, 'bloomRadius', 0, 2, 0.01).onChange((v) => { bloomPass.radius = v; });
+postFolder.add(params, 'bloomThreshold', 0, 1, 0.01).onChange((v) => { bloomPass.threshold = v; });
+postFolder.add(params, 'exposure', 0.1, 3, 0.01).onChange((v) => { renderer.toneMappingExposure = v; });
+postFolder.addColor(params, 'bgColor').name('background').onChange((v) => {
+    scene.background.set(v);
+});
+
+// ─── FILM GRAIN ─────────────────────────────────────────
+const grainCanvas = document.getElementById('grain');
+const grainCtx = grainCanvas.getContext('2d');
+grainCanvas.width = window.innerWidth / 2;
+grainCanvas.height = window.innerHeight / 2;
+
+function updateGrain() {
+    const w = grainCanvas.width;
+    const h = grainCanvas.height;
+    const imageData = grainCtx.createImageData(w, h);
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+        const v = Math.random() * 255;
+        data[i] = v; data[i + 1] = v; data[i + 2] = v; data[i + 3] = 255;
+    }
+    grainCtx.putImageData(imageData, 0, 0);
+}
+
+// ─── ANIMATION ──────────────────────────────────────────
+const clock = new THREE.Clock();
+let grainFrame = 0;
+
+function animate() {
+    requestAnimationFrame(animate);
+    const dt = clock.getDelta();
+    const time = clock.getElapsedTime();
+
+    // Move shapes upward continuously, wrap around
+    for (const shape of shapes) {
+        const d = shape.userData;
+
+        // Scroll up
+        shape.position.y += params.scrollSpeed * dt;
+
+        // Wrap: when shape goes above top, teleport to bottom
+        if (shape.position.y > HALF_H) {
+            shape.position.y -= FIELD_H;
+            // Re-randomize X/Z a bit so it doesn't look like a grid
+            shape.position.x = d.baseX + (Math.random() - 0.5) * 4;
+            shape.position.z = d.baseZ + (Math.random() - 0.5) * 4;
+        }
+
+        // Horizontal drift
+        shape.position.x = d.baseX +
+            Math.sin(time * d.driftSpeed + d.driftPhase) * d.driftAmplitude * params.driftAmount;
+        shape.position.z = d.baseZ +
+            Math.cos(time * d.driftSpeed * 0.7 + d.driftPhase) * d.driftAmplitude * params.driftAmount * 0.5;
+
+        // Spin
+        shape.rotation.x += d.rotSpeed.x * dt * params.shapeSpinSpeed;
+        shape.rotation.y += d.rotSpeed.y * dt * params.shapeSpinSpeed;
+        shape.rotation.z += d.rotSpeed.z * dt * params.shapeSpinSpeed;
+    }
+
+    // Update connection lines
+    // Use the GUI connectionDist
+    updateConnectionsWithDist(params.connectionDist, params.connectionOpacity);
+
+    // Animate lights
+    pointLight1.position.y = Math.sin(time * 0.5) * 10;
+    pointLight2.position.y = Math.cos(time * 0.4) * 10;
+
+    // Film grain
+    grainFrame++;
+    if (grainFrame % 3 === 0) updateGrain();
+
+    composer.render();
+}
+
+function updateConnectionsWithDist(maxDist, opacityMul) {
+    let idx = 0;
+    for (let i = 0; i < shapes.length && idx < MAX_LINES; i++) {
+        const a = shapes[i];
+        for (let j = i + 1; j < shapes.length && idx < MAX_LINES; j++) {
+            const b = shapes[j];
+            const dist = a.position.distanceTo(b.position);
+            if (dist < maxDist) {
+                const alpha = (1.0 - dist / maxDist) * opacityMul;
+                const i6 = idx * 6;
+                const i2 = idx * 2;
+
+                linePositions[i6]     = a.position.x;
+                linePositions[i6 + 1] = a.position.y;
+                linePositions[i6 + 2] = a.position.z;
+                linePositions[i6 + 3] = b.position.x;
+                linePositions[i6 + 4] = b.position.y;
+                linePositions[i6 + 5] = b.position.z;
+
+                const ca = a.userData.color;
+                const cb = b.userData.color;
+                lineColors[i6]     = (ca.r + cb.r) * 0.5;
+                lineColors[i6 + 1] = (ca.g + cb.g) * 0.5;
+                lineColors[i6 + 2] = (ca.b + cb.b) * 0.5;
+                lineColors[i6 + 3] = (ca.r + cb.r) * 0.5;
+                lineColors[i6 + 4] = (ca.g + cb.g) * 0.5;
+                lineColors[i6 + 5] = (ca.b + cb.b) * 0.5;
+
+                lineAlphas[i2]     = alpha;
+                lineAlphas[i2 + 1] = alpha;
+                idx++;
+            }
+        }
+    }
+    for (let i = idx * 6; i < MAX_LINES * 6; i++) linePositions[i] = 0;
+    for (let i = idx * 2; i < MAX_LINES * 2; i++) lineAlphas[i] = 0;
+
+    lineGeo.attributes.position.needsUpdate = true;
+    lineGeo.attributes.aColor.needsUpdate = true;
+    lineGeo.attributes.aAlpha.needsUpdate = true;
+    lineGeo.setDrawRange(0, idx * 2);
+}
+
+animate();
+
+// ─── RESIZE ─────────────────────────────────────────────
+window.addEventListener('resize', () => {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+    composer.setSize(w, h);
+    grainCanvas.width = w / 2;
+    grainCanvas.height = h / 2;
+});
+
+</script>
+</body>
+</html>

@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Digital Babel — An Abstract Meditation on the Modern World</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            overflow: hidden;
+            background: #000;
+            color: #fff;
+            font-family: 'Courier New', monospace;
+        }
+        canvas { display: block; }
+        #overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: rgba(0,0,0,0.85);
+            z-index: 100;
+            transition: opacity 1.5s ease;
+            cursor: pointer;
+        }
+        #overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        #overlay h1 {
+            font-size: clamp(2rem, 6vw, 5rem);
+            font-weight: 100;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+            margin-bottom: 0.5em;
+            background: linear-gradient(135deg, #ff006e, #8338ec, #3a86ff, #06d6a0);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        #overlay p {
+            font-size: clamp(0.7rem, 1.5vw, 1rem);
+            opacity: 0.5;
+            letter-spacing: 0.15em;
+        }
+        #info {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 11px;
+            opacity: 0.3;
+            letter-spacing: 0.1em;
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+        }
+    </style>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+
+<div id="overlay">
+    <h1>Digital Babel</h1>
+    <p>click to enter &mdash; move mouse to influence the flow</p>
+</div>
+
+<div id="info">scroll to zoom &middot; drag to orbit &middot; move to disturb</div>
+
+<!-- ========== VERTEX SHADERS ========== -->
+
+<!-- Particle system vertex shader -->
+<script id="particleVertex" type="x-shader/x-vertex">
+    uniform float uTime;
+    uniform float uPixelRatio;
+    uniform vec3 uMouse3D;
+    attribute float aScale;
+    attribute float aPhase;
+    attribute vec3 aVelocity;
+    attribute vec3 aColor;
+    varying vec3 vColor;
+    varying float vAlpha;
+
+    // Simplex-ish noise
+    vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+    vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+    vec4 permute(vec4 x) { return mod289(((x * 34.0) + 10.0) * x); }
+    vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+    float snoise(vec3 v) {
+        const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+        const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+        vec3 i = floor(v + dot(v, C.yyy));
+        vec3 x0 = v - i + dot(i, C.xxx);
+        vec3 g = step(x0.yzx, x0.xyz);
+        vec3 l = 1.0 - g;
+        vec3 i1 = min(g.xyz, l.zxy);
+        vec3 i2 = max(g.xyz, l.zxy);
+        vec3 x1 = x0 - i1 + C.xxx;
+        vec3 x2 = x0 - i2 + C.yyy;
+        vec3 x3 = x0 - D.yyy;
+        i = mod289(i);
+        vec4 p = permute(permute(permute(
+            i.z + vec4(0.0, i1.z, i2.z, 1.0))
+          + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+          + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+        float n_ = 0.142857142857;
+        vec3 ns = n_ * D.wyz - D.xzx;
+        vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+        vec4 x_ = floor(j * ns.z);
+        vec4 y_ = floor(j - 7.0 * x_);
+        vec4 x = x_ * ns.x + ns.yyyy;
+        vec4 y = y_ * ns.x + ns.yyyy;
+        vec4 h = 1.0 - abs(x) - abs(y);
+        vec4 b0 = vec4(x.xy, y.xy);
+        vec4 b1 = vec4(x.zw, y.zw);
+        vec4 s0 = floor(b0) * 2.0 + 1.0;
+        vec4 s1 = floor(b1) * 2.0 + 1.0;
+        vec4 sh = -step(h, vec4(0.0));
+        vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+        vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+        vec3 p0 = vec3(a0.xy, h.x);
+        vec3 p1 = vec3(a0.zw, h.y);
+        vec3 p2 = vec3(a1.xy, h.z);
+        vec3 p3 = vec3(a1.zw, h.w);
+        vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+        p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+        vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+        m = m * m;
+        return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+    }
+
+    void main() {
+        vec3 pos = position;
+        float t = uTime * 0.3;
+
+        // Curl-noise-like displacement
+        float nx = snoise(pos * 0.015 + vec3(t, 0.0, 0.0));
+        float ny = snoise(pos * 0.015 + vec3(0.0, t, 0.0));
+        float nz = snoise(pos * 0.015 + vec3(0.0, 0.0, t));
+
+        // Vortex pull toward center (attention economy)
+        float dist = length(pos.xz);
+        float vortexStrength = smoothstep(80.0, 5.0, dist) * 2.0;
+        float angle = atan(pos.z, pos.x) + vortexStrength * 0.5 * sin(t * 0.5 + aPhase);
+        float radius = dist + nx * 8.0;
+
+        pos.x = cos(angle) * radius + nx * 12.0;
+        pos.z = sin(angle) * radius + nz * 12.0;
+        pos.y += ny * 15.0 + sin(t * 2.0 + aPhase * 6.28) * 5.0;
+
+        // Rise effect — information ascending
+        pos.y += mod(pos.y + t * 8.0 + aPhase * 50.0, 100.0) - 50.0;
+
+        // Mouse repulsion
+        vec3 toMouse = pos - uMouse3D;
+        float mouseDist = length(toMouse);
+        float mouseForce = smoothstep(30.0, 0.0, mouseDist) * 15.0;
+        pos += normalize(toMouse + 0.001) * mouseForce;
+
+        vColor = aColor;
+
+        // Pulsating alpha based on distance from center
+        float centerDist = length(pos.xz);
+        vAlpha = smoothstep(80.0, 10.0, centerDist) * (0.6 + 0.4 * sin(t * 3.0 + aPhase * 6.28));
+
+        vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+        gl_PointSize = aScale * uPixelRatio * (200.0 / -mvPosition.z);
+        gl_PointSize = max(gl_PointSize, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+    }
+</script>
+
+<!-- Particle system fragment shader -->
+<script id="particleFragment" type="x-shader/x-fragment">
+    varying vec3 vColor;
+    varying float vAlpha;
+
+    void main() {
+        float d = length(gl_PointCoord - vec2(0.5));
+        if (d > 0.5) discard;
+
+        // Soft glow falloff
+        float strength = 1.0 - smoothstep(0.0, 0.5, d);
+        strength = pow(strength, 1.5);
+
+        gl_FragColor = vec4(vColor * strength * 1.5, vAlpha * strength);
+    }
+</script>
+
+<!-- Data stream (instanced rectangles) vertex shader -->
+<script id="streamVertex" type="x-shader/x-vertex">
+    uniform float uTime;
+    attribute vec3 aOffset;
+    attribute float aStreamPhase;
+    attribute vec3 aStreamColor;
+    attribute float aStreamScale;
+    varying vec3 vStreamColor;
+    varying float vStreamAlpha;
+    varying vec2 vUv;
+
+    void main() {
+        vUv = uv;
+        float t = uTime;
+
+        // Each "screen" orbits in a helical path
+        float orbitAngle = aStreamPhase * 6.28 + t * (0.2 + aStreamPhase * 0.3);
+        float orbitRadius = 20.0 + aOffset.x * 0.3;
+        float rise = mod(aOffset.y + t * 5.0 * (0.5 + aStreamPhase), 120.0) - 60.0;
+
+        vec3 worldPos;
+        worldPos.x = cos(orbitAngle) * orbitRadius;
+        worldPos.z = sin(orbitAngle) * orbitRadius;
+        worldPos.y = rise;
+
+        // Billboard rotation toward camera
+        vec4 mvCenter = modelViewMatrix * vec4(worldPos, 1.0);
+
+        // Scale the quad
+        float s = aStreamScale * (0.5 + 0.5 * sin(t * 2.0 + aStreamPhase * 20.0));
+        vec3 scaled = position * s;
+
+        vec4 mvPosition = mvCenter + vec4(scaled.xy, 0.0, 0.0);
+
+        vStreamColor = aStreamColor;
+        vStreamAlpha = smoothstep(60.0, 40.0, abs(rise)) * (0.3 + 0.7 * s / aStreamScale);
+
+        gl_Position = projectionMatrix * mvPosition;
+    }
+</script>
+
+<!-- Data stream fragment shader -->
+<script id="streamFragment" type="x-shader/x-fragment">
+    uniform float uTime;
+    varying vec3 vStreamColor;
+    varying float vStreamAlpha;
+    varying vec2 vUv;
+
+    // Digital noise / scanline effect
+    float random(vec2 st) {
+        return fract(sin(dot(st, vec2(12.9898, 78.233))) * 43758.5453123);
+    }
+
+    void main() {
+        // Screen-like rectangle with border
+        vec2 border = smoothstep(vec2(0.0), vec2(0.05), vUv) *
+                      smoothstep(vec2(0.0), vec2(0.05), 1.0 - vUv);
+        float borderMask = border.x * border.y;
+
+        // Scanlines
+        float scanline = 0.8 + 0.2 * sin(vUv.y * 80.0 + uTime * 10.0);
+
+        // Digital noise
+        float noise = random(vUv * 100.0 + uTime * 5.0) * 0.15;
+
+        // Flickering data
+        float flicker = step(0.97, random(vec2(floor(uTime * 8.0), floor(vUv.y * 10.0))));
+
+        vec3 color = vStreamColor * scanline + noise + flicker * 0.3;
+
+        gl_FragColor = vec4(color, vStreamAlpha * borderMask * 0.7);
+    }
+</script>
+
+<!-- Connection lines vertex shader -->
+<script id="connectionVertex" type="x-shader/x-vertex">
+    attribute float aLineAlpha;
+    varying float vLineAlpha;
+
+    void main() {
+        vLineAlpha = aLineAlpha;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+</script>
+
+<!-- Connection lines fragment shader -->
+<script id="connectionFragment" type="x-shader/x-fragment">
+    uniform vec3 uLineColor;
+    varying float vLineAlpha;
+
+    void main() {
+        gl_FragColor = vec4(uLineColor, vLineAlpha * 0.15);
+    }
+</script>
+
+<!-- Background shader -->
+<script id="bgVertex" type="x-shader/x-vertex">
+    varying vec2 vUv;
+    void main() {
+        vUv = uv;
+        gl_Position = vec4(position.xy, 0.999, 1.0);
+    }
+</script>
+
+<script id="bgFragment" type="x-shader/x-fragment">
+    uniform float uTime;
+    uniform vec2 uResolution;
+    varying vec2 vUv;
+
+    float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+    }
+
+    float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(
+            mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
+            mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x),
+            f.y
+        );
+    }
+
+    float fbm(vec2 p) {
+        float v = 0.0;
+        float a = 0.5;
+        for (int i = 0; i < 5; i++) {
+            v += a * noise(p);
+            p *= 2.0;
+            a *= 0.5;
+        }
+        return v;
+    }
+
+    void main() {
+        vec2 uv = vUv;
+        float t = uTime * 0.05;
+
+        // Domain warping — digital atmosphere
+        vec2 q = vec2(fbm(uv * 3.0 + t), fbm(uv * 3.0 + vec2(5.2, 1.3) + t));
+        vec2 r = vec2(fbm(uv * 3.0 + 4.0 * q + vec2(1.7, 9.2) + t * 0.5),
+                      fbm(uv * 3.0 + 4.0 * q + vec2(8.3, 2.8) + t * 0.3));
+        float f = fbm(uv * 3.0 + 4.0 * r);
+
+        // Color palette — deep digital hues
+        vec3 col = mix(vec3(0.01, 0.01, 0.03), vec3(0.05, 0.0, 0.1), f);
+        col = mix(col, vec3(0.0, 0.03, 0.08), length(q) * 0.5);
+        col = mix(col, vec3(0.08, 0.0, 0.05), r.x * 0.5);
+
+        // Subtle grid overlay
+        vec2 grid = abs(fract(uv * 40.0) - 0.5);
+        float gridLine = smoothstep(0.48, 0.5, max(grid.x, grid.y));
+        col += gridLine * 0.015;
+
+        // Vignette
+        float vignette = 1.0 - length((uv - 0.5) * 1.5);
+        col *= smoothstep(0.0, 0.7, vignette);
+
+        gl_FragColor = vec4(col, 1.0);
+    }
+</script>
+
+<!-- Ground plane shader -->
+<script id="groundVertex" type="x-shader/x-vertex">
+    uniform float uTime;
+    varying vec2 vUv;
+    varying float vElevation;
+
+    void main() {
+        vUv = uv;
+        vec3 pos = position;
+
+        // Ripple waves from center
+        float dist = length(pos.xz);
+        float wave = sin(dist * 0.3 - uTime * 2.0) * 2.0 * smoothstep(50.0, 10.0, dist);
+        wave += sin(dist * 0.1 - uTime * 0.5) * 3.0;
+        pos.y += wave;
+        vElevation = wave;
+
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+    }
+</script>
+
+<script id="groundFragment" type="x-shader/x-fragment">
+    uniform float uTime;
+    varying vec2 vUv;
+    varying float vElevation;
+
+    void main() {
+        // Grid pattern
+        vec2 grid = abs(fract(vUv * 60.0) - 0.5);
+        float line = smoothstep(0.47, 0.5, max(grid.x, grid.y));
+
+        vec3 baseColor = vec3(0.0, 0.02, 0.06);
+        vec3 lineColor = mix(
+            vec3(0.0, 0.15, 0.3),
+            vec3(0.3, 0.0, 0.5),
+            sin(vUv.x * 20.0 + uTime) * 0.5 + 0.5
+        );
+
+        // Elevation glow
+        vec3 elevColor = vec3(0.1, 0.3, 0.8) * max(vElevation * 0.1, 0.0);
+
+        vec3 col = baseColor + line * lineColor * 0.3 + elevColor;
+
+        // Fade at edges
+        float fade = smoothstep(0.5, 0.35, max(abs(vUv.x - 0.5), abs(vUv.y - 0.5)));
+        col *= fade;
+
+        gl_FragColor = vec4(col, fade * 0.6);
+    }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// ─── SETUP ───────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x000008, 0.008);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(0, 25, 55);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.maxDistance = 150;
+controls.minDistance = 10;
+controls.maxPolarAngle = Math.PI * 0.8;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.3;
+
+// ─── POST-PROCESSING ────────────────────────────────────
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+
+const bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    1.5,   // strength
+    0.4,   // radius
+    0.85   // threshold
+);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
+
+// ─── MOUSE TRACKING ─────────────────────────────────────
+const mouse = new THREE.Vector2(0, 0);
+const mouse3D = new THREE.Vector3(0, 0, 0);
+const raycaster = new THREE.Raycaster();
+const mousePlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+window.addEventListener('mousemove', (e) => {
+    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    raycaster.ray.intersectPlane(mousePlane, mouse3D);
+});
+
+// ─── BACKGROUND ─────────────────────────────────────────
+const bgMaterial = new THREE.ShaderMaterial({
+    vertexShader: document.getElementById('bgVertex').textContent,
+    fragmentShader: document.getElementById('bgFragment').textContent,
+    uniforms: {
+        uTime: { value: 0 },
+        uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
+    },
+    depthWrite: false,
+    depthTest: false
+});
+const bgMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), bgMaterial);
+bgMesh.frustumCulled = false;
+bgMesh.renderOrder = -1;
+scene.add(bgMesh);
+
+// ─── GROUND GRID ────────────────────────────────────────
+const groundMaterial = new THREE.ShaderMaterial({
+    vertexShader: document.getElementById('groundVertex').textContent,
+    fragmentShader: document.getElementById('groundFragment').textContent,
+    uniforms: { uTime: { value: 0 } },
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: false
+});
+const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(200, 200, 128, 128),
+    groundMaterial
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -15;
+scene.add(ground);
+
+// ─── PARTICLE SYSTEM — THE INFORMATION FLOW ─────────────
+const PARTICLE_COUNT = 25000;
+const particleGeometry = new THREE.BufferGeometry();
+
+const positions = new Float32Array(PARTICLE_COUNT * 3);
+const scales = new Float32Array(PARTICLE_COUNT);
+const phases = new Float32Array(PARTICLE_COUNT);
+const velocities = new Float32Array(PARTICLE_COUNT * 3);
+const colors = new Float32Array(PARTICLE_COUNT * 3);
+
+const colorPalette = [
+    new THREE.Color('#ff006e'), // Hot pink — urgency, notifications
+    new THREE.Color('#8338ec'), // Purple — mystery, algorithms
+    new THREE.Color('#3a86ff'), // Blue — connectivity
+    new THREE.Color('#06d6a0'), // Teal — growth, crypto
+    new THREE.Color('#ffbe0b'), // Gold — commerce, attention
+    new THREE.Color('#fb5607'), // Orange — viral content
+    new THREE.Color('#ff0a54'), // Red — breaking news
+    new THREE.Color('#00f5d4'), // Cyan — digital, AI
+];
+
+for (let i = 0; i < PARTICLE_COUNT; i++) {
+    const i3 = i * 3;
+
+    // Distribute in a column/vortex shape
+    const angle = Math.random() * Math.PI * 2;
+    const radius = Math.random() * 60 + 2;
+    const height = (Math.random() - 0.5) * 100;
+
+    positions[i3] = Math.cos(angle) * radius;
+    positions[i3 + 1] = height;
+    positions[i3 + 2] = Math.sin(angle) * radius;
+
+    scales[i] = Math.random() * 2.0 + 0.5;
+    phases[i] = Math.random();
+
+    velocities[i3] = (Math.random() - 0.5) * 0.5;
+    velocities[i3 + 1] = Math.random() * 0.5;
+    velocities[i3 + 2] = (Math.random() - 0.5) * 0.5;
+
+    const col = colorPalette[Math.floor(Math.random() * colorPalette.length)];
+    colors[i3] = col.r;
+    colors[i3 + 1] = col.g;
+    colors[i3 + 2] = col.b;
+}
+
+particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+particleGeometry.setAttribute('aScale', new THREE.BufferAttribute(scales, 1));
+particleGeometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
+particleGeometry.setAttribute('aVelocity', new THREE.BufferAttribute(velocities, 3));
+particleGeometry.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
+
+const particleMaterial = new THREE.ShaderMaterial({
+    vertexShader: document.getElementById('particleVertex').textContent,
+    fragmentShader: document.getElementById('particleFragment').textContent,
+    uniforms: {
+        uTime: { value: 0 },
+        uPixelRatio: { value: renderer.getPixelRatio() },
+        uMouse3D: { value: new THREE.Vector3() }
+    },
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+});
+
+const particles = new THREE.Points(particleGeometry, particleMaterial);
+scene.add(particles);
+
+// ─── FLOATING SCREENS — INSTANCED DATA STREAMS ──────────
+const SCREEN_COUNT = 200;
+const screenGeometry = new THREE.InstancedBufferGeometry();
+const baseQuad = new THREE.PlaneGeometry(1.5, 1.0, 1, 1);
+screenGeometry.index = baseQuad.index;
+screenGeometry.attributes.position = baseQuad.attributes.position;
+screenGeometry.attributes.uv = baseQuad.attributes.uv;
+
+const offsets = new Float32Array(SCREEN_COUNT * 3);
+const streamPhases = new Float32Array(SCREEN_COUNT);
+const streamColors = new Float32Array(SCREEN_COUNT * 3);
+const streamScales = new Float32Array(SCREEN_COUNT);
+
+for (let i = 0; i < SCREEN_COUNT; i++) {
+    offsets[i * 3] = (Math.random() - 0.5) * 60;
+    offsets[i * 3 + 1] = (Math.random() - 0.5) * 120;
+    offsets[i * 3 + 2] = (Math.random() - 0.5) * 60;
+
+    streamPhases[i] = Math.random();
+    streamScales[i] = Math.random() * 2.0 + 0.5;
+
+    const col = colorPalette[Math.floor(Math.random() * colorPalette.length)];
+    streamColors[i * 3] = col.r * 0.6;
+    streamColors[i * 3 + 1] = col.g * 0.6;
+    streamColors[i * 3 + 2] = col.b * 0.6;
+}
+
+screenGeometry.setAttribute('aOffset', new THREE.InstancedBufferAttribute(offsets, 3));
+screenGeometry.setAttribute('aStreamPhase', new THREE.InstancedBufferAttribute(streamPhases, 1));
+screenGeometry.setAttribute('aStreamColor', new THREE.InstancedBufferAttribute(streamColors, 3));
+screenGeometry.setAttribute('aStreamScale', new THREE.InstancedBufferAttribute(streamScales, 1));
+
+const screenMaterial = new THREE.ShaderMaterial({
+    vertexShader: document.getElementById('streamVertex').textContent,
+    fragmentShader: document.getElementById('streamFragment').textContent,
+    uniforms: { uTime: { value: 0 } },
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide
+});
+
+const screens = new THREE.Mesh(screenGeometry, screenMaterial);
+scene.add(screens);
+
+// ─── CENTRAL TOWER — THE ALGORITHM ──────────────────────
+const towerGroup = new THREE.Group();
+scene.add(towerGroup);
+
+const towerSegments = 60;
+for (let i = 0; i < towerSegments; i++) {
+    const t = i / towerSegments;
+    const y = t * 80 - 40;
+    const size = 0.3 + Math.sin(t * Math.PI) * 2.5;
+
+    const geometry = new THREE.BoxGeometry(size, 0.8, size);
+    const hue = t * 0.3 + 0.55;
+    const material = new THREE.MeshBasicMaterial({
+        color: new THREE.Color().setHSL(hue, 0.8, 0.5),
+        transparent: true,
+        opacity: 0.4 + Math.sin(t * Math.PI) * 0.4,
+        wireframe: Math.random() > 0.5
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.y = y;
+    mesh.rotation.y = t * Math.PI * 4;
+    mesh.userData.baseY = y;
+    mesh.userData.phase = t;
+    towerGroup.add(mesh);
+}
+
+// ─── ORBITING RINGS — SOCIAL NETWORKS ───────────────────
+const ringCount = 5;
+const ringColors = ['#ff006e', '#3a86ff', '#06d6a0', '#8338ec', '#ffbe0b'];
+
+for (let r = 0; r < ringCount; r++) {
+    const radius = 15 + r * 8;
+    const ringGeo = new THREE.TorusGeometry(radius, 0.05, 8, 128);
+    const ringMat = new THREE.MeshBasicMaterial({
+        color: ringColors[r],
+        transparent: true,
+        opacity: 0.3
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = Math.PI / 2 + (r - 2) * 0.15;
+    ring.userData.speed = 0.1 + r * 0.05;
+    ring.userData.tilt = (r - 2) * 0.15;
+    towerGroup.add(ring);
+}
+
+// ─── NODE NETWORK — CONNECTIONS ─────────────────────────
+const NODE_COUNT = 80;
+const nodes = [];
+
+for (let i = 0; i < NODE_COUNT; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 8 + Math.random() * 40;
+    const height = (Math.random() - 0.5) * 50;
+
+    const geo = new THREE.SphereGeometry(0.2 + Math.random() * 0.3, 8, 8);
+    const col = colorPalette[Math.floor(Math.random() * colorPalette.length)];
+    const mat = new THREE.MeshBasicMaterial({ color: col });
+    const mesh = new THREE.Mesh(geo, mat);
+
+    mesh.position.set(
+        Math.cos(angle) * radius,
+        height,
+        Math.sin(angle) * radius
+    );
+    mesh.userData.velocity = new THREE.Vector3(
+        (Math.random() - 0.5) * 0.1,
+        (Math.random() - 0.5) * 0.05,
+        (Math.random() - 0.5) * 0.1
+    );
+    mesh.userData.basePos = mesh.position.clone();
+    mesh.userData.phase = Math.random() * Math.PI * 2;
+
+    scene.add(mesh);
+    nodes.push(mesh);
+}
+
+// Dynamic connection lines
+const maxConnections = 300;
+const linePositions = new Float32Array(maxConnections * 6);
+const lineAlphas = new Float32Array(maxConnections * 2);
+const lineGeometry = new THREE.BufferGeometry();
+lineGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+lineGeometry.setAttribute('aLineAlpha', new THREE.BufferAttribute(lineAlphas, 1));
+
+const lineMaterial = new THREE.ShaderMaterial({
+    vertexShader: document.getElementById('connectionVertex').textContent,
+    fragmentShader: document.getElementById('connectionFragment').textContent,
+    uniforms: { uLineColor: { value: new THREE.Color('#3a86ff') } },
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+});
+
+const lines = new THREE.LineSegments(lineGeometry, lineMaterial);
+scene.add(lines);
+
+// ─── AMBIENT LIGHT SPHERES ──────────────────────────────
+for (let i = 0; i < 8; i++) {
+    const geo = new THREE.SphereGeometry(0.5, 16, 16);
+    const mat = new THREE.MeshBasicMaterial({
+        color: colorPalette[i],
+        transparent: true,
+        opacity: 0.8
+    });
+    const sphere = new THREE.Mesh(geo, mat);
+    const a = (i / 8) * Math.PI * 2;
+    sphere.position.set(Math.cos(a) * 5, Math.sin(a * 3) * 3, Math.sin(a) * 5);
+    sphere.userData.orbitPhase = a;
+    towerGroup.add(sphere);
+}
+
+// ─── ANIMATION LOOP ─────────────────────────────────────
+const clock = new THREE.Clock();
+let started = false;
+
+// Overlay interaction
+const overlay = document.getElementById('overlay');
+overlay.addEventListener('click', () => {
+    overlay.classList.add('hidden');
+    started = true;
+});
+
+function updateConnections(time) {
+    const CONNECTION_DIST = 25;
+    let lineIndex = 0;
+
+    for (let i = 0; i < nodes.length && lineIndex < maxConnections; i++) {
+        for (let j = i + 1; j < nodes.length && lineIndex < maxConnections; j++) {
+            const dist = nodes[i].position.distanceTo(nodes[j].position);
+            if (dist < CONNECTION_DIST) {
+                const alpha = 1.0 - dist / CONNECTION_DIST;
+                const idx6 = lineIndex * 6;
+                const idx2 = lineIndex * 2;
+
+                linePositions[idx6]     = nodes[i].position.x;
+                linePositions[idx6 + 1] = nodes[i].position.y;
+                linePositions[idx6 + 2] = nodes[i].position.z;
+                linePositions[idx6 + 3] = nodes[j].position.x;
+                linePositions[idx6 + 4] = nodes[j].position.y;
+                linePositions[idx6 + 5] = nodes[j].position.z;
+
+                lineAlphas[idx2] = alpha;
+                lineAlphas[idx2 + 1] = alpha;
+                lineIndex++;
+            }
+        }
+    }
+
+    // Clear remaining
+    for (let i = lineIndex * 6; i < maxConnections * 6; i++) linePositions[i] = 0;
+    for (let i = lineIndex * 2; i < maxConnections * 2; i++) lineAlphas[i] = 0;
+
+    lineGeometry.attributes.position.needsUpdate = true;
+    lineGeometry.attributes.aLineAlpha.needsUpdate = true;
+    lineGeometry.setDrawRange(0, lineIndex * 2);
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+
+    const time = clock.getElapsedTime();
+    const delta = clock.getDelta();
+
+    controls.update();
+
+    // Update uniforms
+    bgMaterial.uniforms.uTime.value = time;
+    groundMaterial.uniforms.uTime.value = time;
+    particleMaterial.uniforms.uTime.value = time;
+    particleMaterial.uniforms.uMouse3D.value.lerp(mouse3D, 0.1);
+    screenMaterial.uniforms.uTime.value = time;
+
+    // Animate tower segments
+    towerGroup.rotation.y = time * 0.1;
+    towerGroup.children.forEach((child) => {
+        if (child.userData.baseY !== undefined) {
+            child.position.y = child.userData.baseY + Math.sin(time * 2 + child.userData.phase * 10) * 1.5;
+            child.rotation.y += 0.01 + child.userData.phase * 0.005;
+            child.rotation.z = Math.sin(time + child.userData.phase * 5) * 0.1;
+
+            // Pulse scale
+            const pulse = 1 + Math.sin(time * 3 + child.userData.phase * 20) * 0.2;
+            child.scale.setScalar(pulse);
+        }
+        // Orbiting light spheres
+        if (child.userData.orbitPhase !== undefined) {
+            const a = child.userData.orbitPhase + time * 0.5;
+            child.position.set(
+                Math.cos(a) * 5,
+                Math.sin(a * 3 + time) * 4,
+                Math.sin(a) * 5
+            );
+            child.scale.setScalar(0.5 + Math.sin(time * 4 + child.userData.orbitPhase) * 0.3);
+        }
+        // Animate rings
+        if (child.userData.speed !== undefined) {
+            child.rotation.z = time * child.userData.speed;
+            child.rotation.x = Math.PI / 2 + child.userData.tilt + Math.sin(time * 0.3) * 0.1;
+        }
+    });
+
+    // Animate nodes
+    for (const node of nodes) {
+        const t = time + node.userData.phase;
+        node.position.x = node.userData.basePos.x + Math.sin(t * 0.5) * 3;
+        node.position.y = node.userData.basePos.y + Math.cos(t * 0.7) * 2;
+        node.position.z = node.userData.basePos.z + Math.sin(t * 0.3 + 1) * 3;
+    }
+
+    updateConnections(time);
+
+    // Camera breathe
+    if (started) {
+        camera.fov = 60 + Math.sin(time * 0.2) * 3;
+        camera.updateProjectionMatrix();
+    }
+
+    // Bloom pulse
+    bloomPass.strength = 1.5 + Math.sin(time * 0.5) * 0.3;
+
+    composer.render();
+}
+
+animate();
+
+// ─── RESIZE ─────────────────────────────────────────────
+window.addEventListener('resize', () => {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+    composer.setSize(w, h);
+    bgMaterial.uniforms.uResolution.value.set(w, h);
+    particleMaterial.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+});
+
+</script>
+</body>
+</html>
