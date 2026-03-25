@@ -77,7 +77,6 @@
 <div id="loading"><div class="spinner"></div><span id="pct">0%</span></div>
 <canvas id="c"></canvas>
 <div id="scroll-driver"></div>
-<div id="hint"><span>&#8595;</span>scroll to fly through</div>
 
 <canvas id="grain"></canvas>
 
@@ -972,6 +971,7 @@ purpleLight.intensity = params.purpleIntensity;
 scene.children.find(c => c.isAmbientLight).intensity = params.ambientIntensity;
 
 const gui = new GUI({ title: 'Tunnel Controls', width: 310 });
+gui.close();
 
 // ─── PRESETS FOLDER ───
 const presetState = { current: 'Neon Vivid', saveName: '' };
