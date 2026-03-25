@@ -102,10 +102,14 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-// ─── CLIPPING PLANE ───
-const clipPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0);
+// ─── SOFT CLIPPING (fade reveal) ───
+const clipFadeUniforms = {
+    clipEdge: { value: 0.0 },      // Z position of the clip edge
+    clipFadeRange: { value: 5.0 },  // how many units the fade spans
+};
+window._clipFadeUniforms = clipFadeUniforms;
+
 window._renderer = renderer;
-window._clipPlane = clipPlane;
 
 const scene = new THREE.Scene();
 window._scene = scene;
@@ -115,44 +119,35 @@ const camera = new THREE.PerspectiveCamera(90, window.innerWidth / window.innerH
 camera.position.set(0, 0, -2);
 window._camera = camera;
 
-// ─── SHADER-BASED CLIPPING ───
-// Inject clip plane logic directly into fragment shaders (bypasses EffectComposer issues)
-const clipUniforms = {
-    clipPlaneNormal: { value: new THREE.Vector3(0, 0, -1) },
-    clipPlaneConstant: { value: 0.0 },
-    clipEnabled: { value: 1.0 },
-};
-window._clipUniforms = clipUniforms;
-
-function addShaderClipping(material) {
+function addClipping(material) {
+    material.transparent = true;
     material.onBeforeCompile = (shader) => {
-        shader.uniforms.clipPlaneNormal = clipUniforms.clipPlaneNormal;
-        shader.uniforms.clipPlaneConstant = clipUniforms.clipPlaneConstant;
-        shader.uniforms.clipEnabled = clipUniforms.clipEnabled;
+        shader.uniforms.clipEdge = clipFadeUniforms.clipEdge;
+        shader.uniforms.clipFadeRange = clipFadeUniforms.clipFadeRange;
 
-        // Add world position varying to vertex shader
-        shader.vertexShader = `varying vec3 vWorldPos;\n` + shader.vertexShader;
+        // Compute world position in vertex shader (works for all material types)
+        shader.vertexShader = `varying vec3 vClipWorldPos;\n` + shader.vertexShader;
         shader.vertexShader = shader.vertexShader.replace(
-            '#include <worldpos_vertex>',
-            `#include <worldpos_vertex>
-             vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+            '}',  // last closing brace = end of main()
+            `  vClipWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;\n}`
         );
 
-        // Use world position for clipping in fragment shader
         shader.fragmentShader = `
-            varying vec3 vWorldPos;
-            uniform vec3 clipPlaneNormal;
-            uniform float clipPlaneConstant;
-            uniform float clipEnabled;
+            varying vec3 vClipWorldPos;
+            uniform float clipEdge;
+            uniform float clipFadeRange;
         ` + shader.fragmentShader;
+
+        // Fade out geometry that is far ahead of the camera (lower Z)
+        // clipEdge = cameraZ - offset (a low Z value ahead)
+        // Objects with z < clipEdge are fully hidden, objects within fadeRange above clipEdge fade in
         shader.fragmentShader = shader.fragmentShader.replace(
-            'void main() {',
-            `void main() {
-                if (clipEnabled > 0.5) {
-                    float clipDist = dot(vWorldPos, clipPlaneNormal) + clipPlaneConstant;
-                    if (clipDist < 0.0) discard;
-                }
-            `
+            /}\s*$/,
+            `  float clipDist = vClipWorldPos.z - clipEdge;
+             float clipAlpha = smoothstep(0.0, clipFadeRange, clipDist);
+             gl_FragColor.a *= clipAlpha;
+             if (gl_FragColor.a < 0.001) discard;
+            }`
         );
     };
     material.needsUpdate = true;
@@ -379,9 +374,7 @@ Promise.all([modelPromise, ...texPromises]).then(([gltf]) => {
                 });
             }
 
-            if (!(n.includes('letter') || n.includes('4x'))) {
-                addShaderClipping(child.material);
-            }
+            addClipping(child.material);
             if (hasMorphs) morphMeshes.push(child);
         });
 
@@ -409,14 +402,6 @@ Promise.all([modelPromise, ...texPromises]).then(([gltf]) => {
         const longestAxis = size.x > size.y ? (size.x > size.z ? 'x' : 'z') : (size.y > size.z ? 'y' : 'z');
         console.log('Longest axis:', longestAxis, '=', size[longestAxis].toFixed(1));
 
-        // Orient clip plane along the tunnel's longest axis
-        // Camera travels from max to min (-Z direction)
-        // Normal points toward min (-axis) so geometry at higher values (behind camera) gets clipped
-        const clipNormal = new THREE.Vector3();
-        clipNormal[longestAxis] = -1;
-        clipPlane.normal.copy(clipNormal);
-        console.log('Clip plane normal:', clipPlane.normal.toArray(), 'axis:', longestAxis);
-
         // Store for scroll-driven camera
         window._tunnel = { size, center, longestAxis, box, model: tunnelModel };
 
@@ -430,7 +415,7 @@ Promise.all([modelPromise, ...texPromises]).then(([gltf]) => {
 
 // ─── 3D TEXT PLANES ───
 const textEntries = [
-    { text: 'ritmo   enigma', size: 200, position: 0.12 },  // position = fraction along tunnel
+    { text: 'ritmo   enigma', size: 100, position: 0.02 },  // position = fraction along tunnel
     { text: 'Dana Ruh', size: 160, position: 0.25 },
     { text: 'ZEPHA', size: 140, position: 0.45 },
     { text: 'Sokidd', size: 140, position: 0.55 },
@@ -476,14 +461,16 @@ function spawnTextMeshes(tunnelBox) {
 
     for (const entry of textEntries) {
         const { tex, aspect } = makeTextTexture(entry.text, entry.size, font, color);
-        const planeH = 0.6;
+        const planeH = 0.15;
         const planeW = planeH * aspect;
         const geo = new THREE.PlaneGeometry(planeW, planeH);
         const mat = new THREE.MeshBasicMaterial({
-            map: tex, transparent: true, depthWrite: false,
-            side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
+            map: tex, transparent: true, depthWrite: false, depthTest: false,
+            side: THREE.DoubleSide, blending: THREE.NormalBlending,
         });
+        addClipping(mat);
         const mesh = new THREE.Mesh(geo, mat);
+        mesh.renderOrder = 999;
         // Position along tunnel Z axis
         mesh.position.z = zMax - entry.position * zRange;
         mesh.position.x = 0;
@@ -587,13 +574,11 @@ function animate() {
     camera.position.y = 0;
     camera.position.z = currentDepth;
 
-    // Update shader-based clip plane behind camera
-    const clipOffset = p.clipOffset ?? 2;
-    clipUniforms.clipPlaneNormal.value.copy(clipPlane.normal);
-    // Shader discards where dot(worldPos, normal) + constant < 0
-    // With normal (0,0,-1): -z + constant < 0 → z > constant → clips behind
-    clipUniforms.clipPlaneConstant.value = currentDepth + clipOffset;
-    clipUniforms.clipEnabled.value = (p.clippingEnabled ?? true) ? 1.0 : 0.0;
+    // Update soft clip fade: reveal geometry ahead of camera
+    const clipOffset = p.clipOffset ?? 15;
+    const clipFadeRange = p.clipFadeRange ?? 5;
+    clipFadeUniforms.clipEdge.value = currentDepth - clipOffset;
+    clipFadeUniforms.clipFadeRange.value = clipFadeRange;
 
     const ms = p.mouseSensitivity ?? 0.3;
     camera.lookAt(mx * ms, my * ms, camera.position.z - 15);
@@ -774,8 +759,8 @@ const params = {
     autoScrollLoop: false,
 
     // Clipping
-    clippingEnabled: true,
-    clipOffset: 2,
+    clipOffset: 15,
+    clipFadeRange: 5,
 
     // Lights
     pinkIntensity: 9.0,
@@ -840,6 +825,7 @@ const PRESETS = {
         lightOrbitRadius: 2.0, ambientIntensity: 0.5, dirLight1Intensity: 1.5, dirLight2Intensity: 1.5,
         waveSpeed: 1.5, waveAmplitude: 0.8, lineSpeed: 2.0, objectPulseSpeed: 3.5,
         rollSpeed: 0.05, rollAmount: 1.0, fov: 60, mouseSensitivity: 0.5,
+        clipOffset: 15, clipFadeRange: 5,
         textFont: 'VG5000', textColor: '#e8e4e0', textOpacity: 1.0, grainOpacity: 0.06, grainScale: 2,
     },
     'Midnight Ember': {
@@ -854,6 +840,7 @@ const PRESETS = {
         lightOrbitRadius: 0.3, ambientIntensity: 0.05, dirLight1Intensity: 0.8, dirLight2Intensity: 0.3,
         waveSpeed: 0.2, waveAmplitude: 0.3, lineSpeed: 0.8, objectPulseSpeed: 2,
         rollSpeed: 0.01, rollAmount: 0.15, fov: 42, mouseSensitivity: 0.1,
+        clipOffset: 15, clipFadeRange: 5,
         textFont: 'VG5000', textColor: '#e8e4e0', textOpacity: 1.0, grainOpacity: 0.06, grainScale: 2,
     },
     'Frozen Pulse': {
@@ -868,6 +855,7 @@ const PRESETS = {
         lightOrbitRadius: 1.0, ambientIntensity: 0.2, dirLight1Intensity: 1.2, dirLight2Intensity: 2.5,
         waveSpeed: 0.15, waveAmplitude: 0.5, lineSpeed: 0.6, objectPulseSpeed: 1.5,
         rollSpeed: 0.008, rollAmount: 0.1, fov: 48, mouseSensitivity: 0.15,
+        clipOffset: 15, clipFadeRange: 5,
         textFont: 'VG5000', textColor: '#e8e4e0', textOpacity: 1.0, grainOpacity: 0.06, grainScale: 2,
     },
     'Vaporwave': {
@@ -882,6 +870,7 @@ const PRESETS = {
         lightOrbitRadius: 0.8, ambientIntensity: 0.3, dirLight1Intensity: 1.0, dirLight2Intensity: 2.0,
         waveSpeed: 0.2, waveAmplitude: 0.35, lineSpeed: 0.9, objectPulseSpeed: 2.5,
         rollSpeed: 0.015, rollAmount: 0.25, fov: 55, mouseSensitivity: 0.3,
+        clipOffset: 15, clipFadeRange: 5,
         textFont: 'VG5000', textColor: '#e8e4e0', textOpacity: 1.0, grainOpacity: 0.06, grainScale: 2,
     },
     'Dana Ruh': {
@@ -896,8 +885,24 @@ const PRESETS = {
         lightOrbitRadius: 0.2, ambientIntensity: 0.3, dirLight1Intensity: 1, dirLight2Intensity: 1.5,
         waveSpeed: 1.75, waveAmplitude: 0.42, lineSpeed: 2.5, objectPulseSpeed: 4,
         autoScroll: false, autoScrollDuration: 20, autoScrollLoop: false,
-        clippingEnabled: false, clipOffset: 2,
+        clipOffset: 15, clipFadeRange: 5,
         rollSpeed: 0.185, rollAmount: 1.4, fov: 150, mouseSensitivity: 0,
+        textFont: 'VG5000', textColor: '#ff8000', textOpacity: 1, grainOpacity: 0.06, grainScale: 2,
+    },
+    'Dana Ruh 2': {
+        bloomStrength: 0.39, bloomRadius: 0.75, bloomThreshold: 0.15, exposure: 1,
+        hueOffset: 0.12, hueSpeed: 0.008, hueRange: 0.3,
+        lineHueShift: 0, waveHueShift: 0.66, objectHueShift: 0.17, frameHueShift: 0.5, bgHueShift: 0.5,
+        lineSaturation: 1, lineLightness: 0.6, waveSaturation: 1, waveLightness: 0.6,
+        objectSaturation: 1, objectLightness: 0.7, frameSaturation: 0.8, frameLightness: 0.6,
+        bgSaturation: 0, bgLightness: 0, waveEmissive: 1, objectEmissive: 1,
+        lineColorManual: '', waveColorManual: '', objectColorManual: '', frameColorManual: '', bgColorManual: '',
+        pinkIntensity: 9, blueIntensity: 7, greenIntensity: 7.5, purpleIntensity: 8,
+        lightOrbitRadius: 0.2, ambientIntensity: 0.3, dirLight1Intensity: 1, dirLight2Intensity: 1.5,
+        waveSpeed: 1.75, waveAmplitude: 0.42, lineSpeed: 2.5, objectPulseSpeed: 4,
+        autoScroll: false, autoScrollDuration: 20, autoScrollLoop: false,
+        clipOffset: 8, clipFadeRange: 5,
+        rollSpeed: 0, rollAmount: 1.4, fov: 30, mouseSensitivity: 0,
         textFont: 'VG5000', textColor: '#ff8000', textOpacity: 1, grainOpacity: 0.06, grainScale: 2,
     },
 };
@@ -1099,8 +1104,8 @@ fAutoScroll.add({ stopRecord() {
 }}, 'stopRecord').name('Stop & Save');
 
 const fClip = gui.addFolder('Clipping');
-fClip.add(params, 'clippingEnabled').name('Enabled');
 fClip.add(params, 'clipOffset', 0, 50, 0.5).name('Reveal Distance');
+fClip.add(params, 'clipFadeRange', 1, 20, 0.5).name('Fade Range');
 
 // ─── PER-GROUP COLOR CONTROLS ───
 const fColor = gui.addFolder('Color Cycling');
